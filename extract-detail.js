@@ -8,6 +8,7 @@
  * 3. 点击 Description 展开，获取图文混排的描述内容（HTML含<img>标签）
  * 4. 下载所有图片（主图+SKU缩略图+描述图）
  * 5. 生成 product.json，description 为含本地图片的 HTML
+ * 6. 自动生成 Shopify SEO 标题（shopifyTitle 字段）
  */
 
 const { chromium } = require('playwright');
@@ -16,8 +17,115 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 
-const CDP_URL = 'ws://127.0.0.1:44035/devtools/browser/dc10fec1-c52f-446b-a7d6-c769cf12f0a0';
+const CDP_URL = 'ws://127.0.0.1:33567/devtools/browser/92024076-6bc2-46e7-9415-7088967ef44d';
 const OUTPUT_DIR = '/root/.openclaw/TKdown';
+
+/**
+ * 从原始标题和描述生成 Shopify SEO 友好标题
+ * @param {string} originalTitle - 原始标题
+ * @param {string} description - 商品描述文字
+ * @returns {string} SEO友好标题
+ */
+function generateShopifyTitle(originalTitle, description) {
+  if (!originalTitle) return '';
+  
+  // 1. 提取品牌（通常是第一个词）
+  const firstWord = originalTitle.trim().split(/\s+/)[0];
+  const isBrand = firstWord.length > 1 && /^[A-Z][a-zA-Z0-9]*$/.test(firstWord);
+  const brand = isBrand ? firstWord : '';
+  
+  // 2. 从标题和描述中提取产品核心词
+  const lowerTitle = originalTitle.toLowerCase();
+  const lowerDesc = (description || '').toLowerCase();
+  
+  // 定义要查找的卖点关键词（按优先级排序）
+  const featurePatterns = [
+    // 射程/亮度
+    { key: '1000m', label: '1000m Beam', pattern: /1000\s*m(eters?)?\s*(beam|range|throw)/i },
+    { key: 'rechargeable', label: 'Rechargeable', pattern: /rechargeable/i },
+    { key: 'tactical', label: 'Tactical', pattern: /\btactical\b/i },
+    { key: 'zoomable', label: 'Zoomable', pattern: /\bzoom(able)?\b/i },
+    { key: 'waterproof', label: 'Waterproof', pattern: /\bwater\ ?proof\b/i },
+    { key: '6 modes', label: '6 Modes', pattern: /\b6\s*mode/i },
+    { key: '5 modes', label: '5 Modes', pattern: /\b5\s*mode/i },
+    // 电池
+    { key: '5000mah', label: '5000mAh Battery', pattern: /5000\s*mah/i },
+    { key: 'battery', label: 'Battery', pattern: /\bmah\b/i },
+    // 用途
+    { key: 'camping', label: 'Camping', pattern: /\bcamping\b/i },
+    { key: 'outdoor', label: 'Outdoor', pattern: /\boutdoor\b/i },
+    { key: 'emergency', label: 'Emergency', pattern: /\bemergency\b/i },
+    // LED/亮度
+    { key: 'led', label: 'LED', pattern: /\bled\b/i },
+    { key: 'ultrabright', label: 'Ultra-Bright', pattern: /\bultra[\s-]?bright\b/i },
+    { key: 'high lumen', label: 'High Lumen', pattern: /\bhigh\s*lumen\b/i },
+  ];
+  
+  // 从描述中提取射程（特殊处理，因为这个卖点很强）
+  let beamDistance = '';
+  const beamMatch = lowerDesc.match(/(\d+)\s*m(eters?)?\s*(beam|range|throw|distance)/i);
+  if (beamMatch) {
+    beamDistance = beamMatch[1] + 'm Beam';
+  }
+  
+  // 按优先级收集卖点
+  const features = new Set();
+  
+  for (const feat of featurePatterns) {
+    if (feat.key === '1000m') {
+      if (beamDistance) features.add(beamDistance);
+    } else {
+      if (feat.pattern.test(lowerTitle) || feat.pattern.test(lowerDesc)) {
+        features.add(feat.label);
+      }
+    }
+  }
+  
+  // 3. 移除冗余的"电池"描述（如果已经有具体mAh数字）
+  if (features.has('5000mAh Battery') && features.has('Battery')) {
+    features.delete('Battery');
+  }
+  
+  // 4. 构建SEO标题
+  // 格式: 品牌 + 产品核心 + 核心卖点 + 用途
+  const productCore = 'LED Flashlight';
+  
+  // 核心卖点列表（保留最多5个，避免太长）
+  const topFeatures = [];
+  const priorityOrder = ['1000m Beam', 'Rechargeable', 'Tactical', '6 Modes', '5 Modes', 
+                        'Zoomable', 'Waterproof', '5000mAh Battery', 'LED', 'Ultra-Bright',
+                        'High Lumen', 'Camping', 'Outdoor', 'Emergency', 'Battery'];
+  
+  for (const feat of priorityOrder) {
+    if (features.has(feat) && topFeatures.length < 5) {
+      topFeatures.push(feat);
+    }
+  }
+  
+  // 用途（最多2个）
+  const usageTags = [];
+  for (const feat of ['Camping', 'Outdoor', 'Emergency', 'Tactical']) {
+    if (features.has(feat) && usageTags.length < 2) {
+      usageTags.push(feat);
+    }
+  }
+  
+  // 组装标题
+  let seoTitle = brand ? brand + ' ' + productCore : productCore;
+  
+  if (topFeatures.length > 0) {
+    seoTitle += ' - ' + topFeatures.join(', ');
+  }
+  
+  if (usageTags.length > 0 && !seoTitle.includes(usageTags[0])) {
+    seoTitle += ' for ' + usageTags.join(', ');
+  }
+  
+  // 清理多余的逗号和空格
+  seoTitle = seoTitle.replace(/,\s*,/g, ',').replace(/\s+/g, ' ').trim();
+  
+  return seoTitle;
+}
 
 // 获取当前日期目录下的最大序号
 function getNextSeq(dateDir) {
@@ -381,9 +489,12 @@ async function main() {
   const defaultPrice = skuDetails.length > 0 && skuDetails[0].price ? skuDetails[0].price : '';
   const defaultCompareAt = skuDetails.length > 0 && skuDetails[0].compareAtPrice ? skuDetails[0].compareAtPrice : '';
 
+  // 9. 生成 Shopify SEO 标题
+  const shopifyTitle = generateShopifyTitle(title, descResult.text);
+
   const productJson = {
-    title: title,
-    description: descResult.text,         // 纯文本版本
+    title: title,                        // 原始标题
+    shopifyTitle: shopifyTitle,          // ★ Shopify SEO 优化标题
     descriptionHtml: cleanDescHtml,       // ★ 图文混排 HTML 版本
     price: defaultPrice,
     compareAtPrice: defaultCompareAt,
@@ -411,7 +522,8 @@ async function main() {
 
   console.log('\n✅ 完成！');
   console.log('📁 ' + outDir);
-  console.log('🏷️ ' + title.substring(0, 60));
+  console.log('🏷️ 原始标题: ' + title.substring(0, 60));
+  console.log('🏷️ Shopify标题: ' + shopifyTitle.substring(0, 70));
   console.log('💰 $' + defaultPrice + (defaultCompareAt ? ' → $' + defaultCompareAt : ''));
   console.log('🖼️  主图: ' + downloaded.length + ' 张 | 描述图: ' + descImages.length + ' 张');
   console.log('📦 SKU: ' + skuDetails.length + ' 个');
