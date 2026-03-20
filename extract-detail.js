@@ -17,7 +17,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 
-const CDP_URL = 'ws://127.0.0.1:33567/devtools/browser/92024076-6bc2-46e7-9415-7088967ef44d';
+const CDP_URL = process.env.TK_CDP_URL || 'ws://127.0.0.1:44035/devtools/browser/dc10fec1-c52f-446b-a7d6-c769cf12f0a0';
 const OUTPUT_DIR = '/root/.openclaw/TKdown';
 
 /**
