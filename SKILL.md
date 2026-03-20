@@ -112,7 +112,18 @@ node extract-detail.js
 ❌ 错误：遍历全页找 $/ 导致混入其他商品价格
 ✅ 正确：先点击 SKU，再在标题父容器内查找价格
 
-### 5. 详情要存展开后的真实内容
+### 5. 描述区图片必须在特定位置提取
+**踩坑记录：** 之前 `descriptionImages` 一直为空。
+**原因：** 页面需要先滚动到位置0加载商品数据，再点击展开按钮，描述图片才在 DOM 中可见。
+**正确步骤：**
+1. `window.scrollTo(0, 0)` — 先回到顶部
+2. 等待商品数据渲染
+3. 点击 Description/Details 展开按钮
+4. 立即在 `[class*="overflow-hidden"][class*="transition-all"]` div 内提取 `<img>` 标签
+5. 图片 URL 格式：`~tplv-fhlh96nyum-origin-jpeg.jpeg`（原始分辨率）
+6. 如果提取偏晚，图片可能随页面滚动被销毁
+
+### 6. 详情要存展开后的真实内容
 ❌ 错误：存 TikTok 的 meta 广告语（"Buy... on TikTok Shop..."）
 ✅ 正确：点击展开按钮，从 overflow-hidden.transition-all 取 innerText
 
