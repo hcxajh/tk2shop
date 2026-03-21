@@ -19,6 +19,106 @@ const http = require('http');
 
 const CDP_URL = process.env.TK_CDP_URL || 'ws://127.0.0.1:44035/devtools/browser/dc10fec1-c52f-446b-a7d6-c769cf12f0a0';
 const OUTPUT_DIR = '/root/.openclaw/TKdown';
+const MINIMAX_API_KEY = 'sk-cp-Dst9QMV4HgpBuFOpwDxiJAr7CW5dwJZv0kXGGyfpKfNzDRIBJhjgGl2QcsxPtd37gQii7WS2roJZqOuVjNLCiJXCevsxSuO4dnDeHZIh-O8NYZ5FkEz02uY';
+
+/**
+ * 调用 MiniMax AI 生成 Shopify 风格营销型产品介绍
+ * @param {string} originalTitle - 原始标题
+ * @param {string} shopifyTitle - SEO优化标题
+ * @param {string} originalDesc - 原始描述文字
+ * @param {string[]} images - 描述图片路径列表
+ * @returns {Promise<string>} Shopify 风格 HTML
+ */
+async function generateShopifyDescriptionAI(originalTitle, shopifyTitle, originalDesc, images) {
+  if (!originalDesc || originalDesc.length < 20) {
+    console.log('⚠️ 原始描述太短，跳过AI生成');
+    return '';
+  }
+
+  const prompt = `你是一位专业的跨境电商 Shopify 产品文案专家。请根据以下 TikTok Shop 原始产品描述，写一套适合 Shopify 的营销型产品介绍。
+
+## 原始标题
+${originalTitle}
+
+## SEO优化标题
+${shopifyTitle}
+
+## 原始产品描述
+${originalDesc}
+
+## 要求
+1. 风格：营销型，要有感染力，突出产品卖点和使用场景
+2. 结构：要有小标题（<h2>）、段落（<p>）、要点列表（<ul><li>）
+3. 语言：英文，面向欧美市场消费者
+4. 不要臆造产品规格，只基于原始描述里有的信息来写
+5. 禁止使用 Emoji
+6. HTML 要干净，不要有多余的 class 或 style
+7. 总长度适中，不要太长（一般 300~600 词）
+8. 在需要插入图片的位置，用 [IMAGE_PLACEHOLDER_1]、[IMAGE_PLACEHOLDER_2] 这样的占位符表示
+9. 占位符数量不要超过 ${(images || []).length} 个
+
+请直接输出 HTML 内容，不要加markdown代码块标记。`;
+
+  try {
+    console.log('🤖 调用 AI 生成 Shopify 风格产品介绍...');
+    const response = await fetch('https://api.minimaxi.com/v1/text/chatcompletion_v2', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${MINIMAX_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'MiniMax-M2.5',
+        messages: [
+          { role: 'user', content: prompt }
+        ],
+        max_tokens: 4000,
+        temperature: 0.7
+      })
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.log('⚠️ AI 生成失败:', response.status, errText);
+      return '';
+    }
+
+    const data = await response.json();
+    const generatedText = data.choices?.[0]?.message?.content || '';
+
+    if (!generatedText) {
+      console.log('⚠️ AI 返回内容为空');
+      return '';
+    }
+
+    // 清理可能残留的 markdown 代码块
+    let cleanHtml = generatedText
+      .replace(/^```html\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    // 替换图片占位符为真实 <img> 标签
+    if ((images || []).length > 0) {
+      let imgIdx = 0;
+      cleanHtml = cleanHtml.replace(/\[IMAGE_PLACEHOLDER_(\d+)\]/g, (match, num) => {
+        if (imgIdx < images.length) {
+          const imgTag = `<img src="${images[imgIdx]}" alt="product detail ${imgIdx + 1}" style="max-width:100%;margin:16px 0;" />`;
+          imgIdx++;
+          return imgTag;
+        }
+        return '';
+      });
+    }
+
+    console.log('✅ AI 生成完成 (' + cleanHtml.length + ' 字符)');
+    return cleanHtml;
+
+  } catch (e) {
+    console.log('⚠️ AI 调用异常:', e.message);
+    return '';
+  }
+}
 
 /**
  * 从原始标题和描述生成 Shopify SEO 友好标题
@@ -125,6 +225,96 @@ function generateShopifyTitle(originalTitle, description) {
   seoTitle = seoTitle.replace(/,\s*,/g, ',').replace(/\s+/g, ' ').trim();
   
   return seoTitle;
+}
+
+/**
+ * 将原始描述文字优化为 Shopify 风格 HTML
+ * 保留内容，只调整格式
+ * @param {string} text - 原始描述文字（纯文本）
+ * @param {string[]} images - 描述图片路径列表，如 ["desc-images/desc_001.jpg", ...]
+ * @returns {string} Shopify 风格 HTML
+ */
+function optimizeForShopify(text, images) {
+  if (!text && (!images || images.length === 0)) return '';
+  
+  const lines = (text || '').split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
+  const imgList = images || [];
+  let imgIdx = 0;
+  
+  let html = '';
+  let i = 0;
+  
+  while (i < lines.length) {
+    const line = lines[i];
+    const nextLine = lines[i + 1] || '';
+    
+    // 判断是否是标题行：全大写、或全数字开头、或短句（< 30字符且以特殊符号结尾）
+    const isHeading = (
+      /^[A-Z][A-Z\s\d]+$/.test(line) ||                          // 全大写单词
+      /^\d+[\.\)]\s/.test(line) ||                               // "1. xxx" 或 "1) xxx"
+      (line.length < 40 && /[!:\-–—]$/.test(line)) ||            // 短句以冒号/感叹号结尾
+      /^(Features|Specifications|Price|Note|Warning|Benefit)/i.test(line) // 常见标题词
+    );
+    
+    // 判断是否是列表项：短行、以 -、•、*、✓、✔ 开头
+    const isListItem = (
+      /^[•\-\*\+\√✓✔▶]\s/.test(line) ||
+      /^[\-\*\+\–]\s/.test(line) ||
+      /^\d+[\.\)]\s/.test(line)
+    );
+    
+    if (isHeading) {
+      // 标题：去掉末尾标点，生成 <h2>
+      const headingText = line.replace(/[:\!\.\-\–—]+$/, '').trim();
+      if (headingText) {
+        html += `<h2>${headingText}</h2>\n`;
+      }
+      i++;
+    } else if (isListItem) {
+      // 列表开始：收集连续的所有列表项
+      const items = [];
+      while (i < lines.length) {
+        const item = lines[i];
+        if (/^[•\-\*\+\√✓✔▶]\s/.test(item) || /^[\-\*\+\–]\s/.test(item) || /^\d+[\.\)]\s/.test(item)) {
+          // 去掉列表符号，保留文字
+          const cleanItem = item.replace(/^[•\-\*\+\√✓✔▶▶]\s*/, '').replace(/^\d+[\.\)]\s*/, '').trim();
+          if (cleanItem) items.push(cleanItem);
+          i++;
+        } else {
+          break;
+        }
+      }
+      if (items.length > 0) {
+        html += `<ul>\n`;
+        for (const item of items) {
+          html += `  <li>${item}</li>\n`;
+        }
+        html += `</ul>\n`;
+      }
+    } else {
+      // 普通段落：判断是否要在这里插入图片
+      // 规则：每 2~3 个段落后插入一张图片（如果有）
+      const paraCount = (html.match(/<p>/g) || []).length;
+      const shouldInsertImg = imgIdx < imgList.length && paraCount > 0 && paraCount % 3 === 0;
+      
+      if (shouldInsertImg) {
+        html += `<p>${line}</p>\n`;
+        html += `<img src="${imgList[imgIdx]}" alt="product detail" style="max-width:100%;margin:16px 0;" />\n`;
+        imgIdx++;
+      } else {
+        html += `<p>${line}</p>\n`;
+      }
+      i++;
+    }
+  }
+  
+  // 如果还有剩余图片，放在最后
+  while (imgIdx < imgList.length) {
+    html += `<img src="${imgList[imgIdx]}" alt="product detail" style="max-width:100%;margin:16px 0;" />\n`;
+    imgIdx++;
+  }
+  
+  return html.trim();
 }
 
 // 获取当前日期目录下的最大序号
@@ -476,14 +666,8 @@ async function main() {
     }
   }
   
-  // 清理 HTML：移除 TikTok 内部标签、样式、脚本
-  let cleanDescHtml = descHtmlModified
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/class="[^"]*"/g, '')
-    .replace(/data-[a-z-]+="[^"]*"/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
+  // ★ Shopify 风格优化：保留内容，只调格式
+  let cleanDescHtml = optimizeForShopify(descResult.text, descImages);
 
   // 8. 生成 product.json
   const defaultPrice = skuDetails.length > 0 && skuDetails[0].price ? skuDetails[0].price : '';
@@ -492,16 +676,20 @@ async function main() {
   // 9. 生成 Shopify SEO 标题
   const shopifyTitle = generateShopifyTitle(title, descResult.text);
 
+  // ★ 10. AI 生成 Shopify 风格营销型产品介绍
+  const descriptionAi = await generateShopifyDescriptionAI(title, shopifyTitle, descResult.text, descImages);
+
   const productJson = {
-    title: title,                        // 原始标题
-    shopifyTitle: shopifyTitle,          // ★ Shopify SEO 优化标题
-    descriptionHtml: cleanDescHtml,       // ★ 图文混排 HTML 版本
+    title: title,
+    shopifyTitle: shopifyTitle,
+    descriptionHtml: cleanDescHtml,
+    descriptionAi: descriptionAi || undefined,
     price: defaultPrice,
     compareAtPrice: defaultCompareAt,
     sku: 'TK-' + productId,
     status: 'active',
     images: downloaded,
-    descriptionImages: descImages,         // ★ 描述图片文件名列表
+    descriptionImages: descImages,
     _meta: {
       productId: productId,
       seq: seqStr,
@@ -528,6 +716,11 @@ async function main() {
   console.log('🖼️  主图: ' + downloaded.length + ' 张 | 描述图: ' + descImages.length + ' 张');
   console.log('📦 SKU: ' + skuDetails.length + ' 个');
   console.log('📝 描述文字: ' + descResult.text.length + ' 字符');
+  if (descriptionAi) {
+    console.log('✨ AI营销文案: ' + descriptionAi.length + ' 字符');
+  } else {
+    console.log('⚠️ AI营销文案未生成');
+  }
   browser.close();
 }
 

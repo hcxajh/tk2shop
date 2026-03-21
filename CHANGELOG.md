@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.0] - 2026-03-21
+
+### 新增
+- **descriptionAi 字段**：调用 MiniMax AI 根据原始描述重新生成 Shopify 风格营销型产品介绍
+- 营销风格，面向欧美市场，突出卖点和使用场景
+- HTML 结构：`<h2>` 标题 + `<p>` 段落 + `<ul><li>` 列表 + `<img>` 图片
+- descriptionHtml 保留格式优化版，descriptionAi 为 AI 重写版，两字段独立
+
+### 优化
+- descriptionHtml 全面升级为 Shopify 风格：自动识别标题、列表项、段落，合理插入图片
+- 内容主体完全保留，只调格式（不做内容改写）
+- 标题识别：全大写、短句冒号结尾、常见标题词（Features/Specifications/Price等）
+- 列表识别：自动归并连续列表项为 `<ul><li>` 结构
+- 图片插入：每3段自动插入一张描述图，保持图文均衡排版
+
 ## [1.1.0] - 2026-03-20
 
 ### 修复
