@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.1] - 2026-03-23
+
+### 新增
+- **upload-product.js**：商品发布到 Shopify，支持标题/价格/SKU/描述/图片上传，自动发布并截图留档
+- SKILL.md 新增"商品发布到 Shopify"章节
+
+### 清理
+- 删除 workspace_code/scripts/ 和 products/ 目录（已迁移到 tk2shop 技能）
+
 ## [1.3.0] - 2026-03-23
 
 ### 新增
