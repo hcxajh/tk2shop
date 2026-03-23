@@ -3,15 +3,16 @@
  * TikTok 采集并发启动器
  *
  * 用法：
- *   node spawn.js "https://shop.tiktok.com/us/pdp/..."              # 单个
- *   node spawn.js "url1" "url2" "url3"                             # 并发3个
- *   node spawn.js --file urls.txt --parallel 5                    # 从文件读取，5个并发
+ *   node spawn.js "https://shop.tiktok.com/us/pdp/..."           # 单个
+ *   node spawn.js "url1" "url2" "url3"                          # 并发3个
+ *   node spawn.js --file urls.txt --parallel 5                   # 从文件读取，5个并发
  *
  * 流程：
  * 1. 解析参数（URL列表 + 并发数）
- * 2. 预分配配置文件（每个任务分配一个空闲profile）
- * 3. 并发启动多个 runner.js 进程
- * 4. 收集结果，输出汇总
+ * 2. 从 config/profile-pool.json 读取配置
+ * 3. 预分配配置文件（每个任务分配一个空闲profile）
+ * 4. 并发启动多个 runner.js 进程
+ * 5. 收集结果，输出汇总
  */
 
 const { spawn } = require('child_process');
@@ -21,7 +22,7 @@ const readline = require('readline');
 
 const SKILL_DIR = __dirname;
 const RUNNER = path.join(SKILL_DIR, 'runner.js');
-const PROFILE_POOL_FILE = path.join(SKILL_DIR, 'profile-pool.json');
+const PROFILE_POOL_FILE = path.join(SKILL_DIR, '..', '..', 'config', 'profile-pool.json');
 
 // ============================================================
 // 配置

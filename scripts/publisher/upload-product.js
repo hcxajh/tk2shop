@@ -21,8 +21,14 @@ const fs = require('fs');
 // Default AdsPower CDP URL (use env or argument to override)
 const CDP_URL = process.env.CDP_URL || 'ws://127.0.0.1:37173/devtools/browser/852e47dd-a4a0-417c-a530-551257e38087';
 
-// Product store path (TKdown/YYYY-MM-DD/seq/)
-const PRODUCTS_DIR = path.join(__dirname, '..', 'TKdown');
+// 从配置文件读取 outputDir
+const CONFIG_FILE = path.join(__dirname, '..', '..', 'config', 'profile-pool.json');
+let PRODUCTS_DIR = '/root/.openclaw/TKdown';
+try {
+  const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  if (config.outputDir) PRODUCTS_DIR = config.outputDir;
+} catch (e) {}
+
 
 async function uploadProduct(folderName) {
   const folderPath = path.join(PRODUCTS_DIR, folderName);

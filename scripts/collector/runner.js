@@ -25,7 +25,7 @@ const http = require('http');
 // ============================================================
 // 配置
 // ============================================================
-const PROFILE_POOL_FILE = path.join(__dirname, 'profile-pool.json');
+const PROFILE_POOL_FILE = path.join(__dirname, '..', '..', 'config', 'profile-pool.json');
 
 // 从配置文件读取所有配置
 let OUTPUT_DIR = process.env.TK_OUTPUT_DIR || null;
