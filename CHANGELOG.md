@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.0] - 2026-03-23
+
+### 新增
+- **runner.js**：自动采集子代理，全流程（开浏览器→导航→采集→下载→关浏览器）无人值守
+- **spawn.js**：并发启动器，支持多URL并发、文件导入URL列表、结果汇总
+- **profile-pool.json**：配置文件池，供子代理自动选择空闲 profile
+
+### 修复
+- URL 正则修复：从 `/\/(\d+)\?/` 改为 `/\/(\d+)(?:\?.*)?$/`，正确提取商品ID
+- CDP URL 解析：从 `ws.puppeteer:` 行提取 WebSocket URL
+- 浏览器打开命令 JSON 格式确认：`{"profileNo":"1896381"}`
+
+### 优化
+- **划线价（compareAtPrice）采集**：从 `items-baseline` 容器提取现价+划线价，处理 TikTok 分段文本（`$\n15\n.80\n$29.99`）
+- **cleanDescImgUrl**：删除泛化 replace 规则，避免误匹配
+- **并发安全**：文件锁机制，防止多进程抢同一 profile
+- **并发预检**：启动时自动过滤不存在的 profile 编号
+
 ## [1.2.0] - 2026-03-21
 
 ### 新增
