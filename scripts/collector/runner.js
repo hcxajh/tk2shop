@@ -132,7 +132,7 @@ function findAvailableProfile() {
 
 function openBrowser(profileNo) {
   log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
-  // 构造正确的 JSON: {"profileNo": "1896381"}
+  // 构造正确的 JSON: {"profileNo": "1896325"}
   const jsonArg = `{"profileNo":"${profileNo}"}`;
   const out = execSync(
     `npx --yes adspower-browser open-browser '${jsonArg}' 2>&1`,
