@@ -1,7 +1,8 @@
 {
-  "description": "tk2shop-agent 子代理可用的 AdsPower 配置文件编号池",
+  "description": "tk2shop 采集配置表",
   "updated": "2026-03-23",
+  "outputDir": "/root/.openclaw/TKdown",
   "profiles": [
-    1895750
+    1896381
   ]
 }

@@ -31,13 +31,16 @@ function log(msg) {
   console.log(`[${new Date().toISOString().slice(11,19)}] ${msg}`);
 }
 
-function loadProfilePool() {
+function loadConfig() {
   try {
     const config = JSON.parse(fs.readFileSync(PROFILE_POOL_FILE, 'utf8'));
-    return config.profiles || [];
+    return {
+      profiles: config.profiles || [],
+      outputDir: config.outputDir || process.env.TK_OUTPUT_DIR || null
+    };
   } catch (e) {
-    log(`⚠️ 读取配置池失败: ${e.message}`);
-    return [];
+    log(`⚠️ 读取配置文件失败: ${e.message}`);
+    return { profiles: [], outputDir: null };
   }
 }
 
@@ -161,15 +164,20 @@ async function main() {
     process.exit(1);
   }
 
-  const pool = loadProfilePool();
+  const { profiles: pool, outputDir } = loadConfig();
   if (pool.length === 0) {
     console.error('❌ 配置文件池为空');
+    process.exit(1);
+  }
+  if (!outputDir) {
+    console.error('❌ 未配置 outputDir，请检查 profile-pool.json');
     process.exit(1);
   }
 
   log(`🎯 待采集: ${urls.length} 个商品`);
   log(`⚡ 并发数: ${concurrency}`);
   log(`📋 配置文件池: ${pool.length} 个 (${pool.join(', ')})`);
+  log(`📁 输出目录: ${outputDir}`);
   log('');
 
   // 过滤出真实存在的 profile（通过 get-browser-active 验证）

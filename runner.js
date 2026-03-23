@@ -25,24 +25,33 @@ const http = require('http');
 // ============================================================
 // 配置
 // ============================================================
-const ADSPOWER_API_KEY = process.env.TK_ADSPOWER_API_KEY || '517b8a7eddc3e977182ae37d19430b8b003dbc5f7b8ec1e2';
-const OUTPUT_DIR = process.env.TK_OUTPUT_DIR || '/root/.openclaw/TKdown';
-
-// 从本地配置文件读取可用配置文件池
 const PROFILE_POOL_FILE = path.join(__dirname, 'profile-pool.json');
-let PROFILE_POOL = [1896381, 1896382, 1896383, 1896384, 1896385,
-                    1896386, 1896387, 1896388, 1896389, 1896390]; // 默认值
+
+// 从配置文件读取所有配置
+let OUTPUT_DIR = process.env.TK_OUTPUT_DIR || null;
+let PROFILE_POOL = [];
 try {
   if (fs.existsSync(PROFILE_POOL_FILE)) {
     const config = JSON.parse(fs.readFileSync(PROFILE_POOL_FILE, 'utf8'));
+    if (!OUTPUT_DIR && config.outputDir) {
+      OUTPUT_DIR = config.outputDir;
+    }
     if (config.profiles && Array.isArray(config.profiles) && config.profiles.length > 0) {
       PROFILE_POOL = config.profiles;
-      log(`📋 已加载配置文件池: ${PROFILE_POOL.join(', ')}`);
     }
   }
 } catch (e) {
-  log(`⚠️ 读取配置文件池失败，使用默认值: ${e.message}`);
+  // ignore
 }
+if (!OUTPUT_DIR) {
+  console.error('❌ 未配置 outputDir，请检查 profile-pool.json');
+  process.exit(1);
+}
+if (PROFILE_POOL.length === 0) {
+  console.error('❌ 未配置 profiles，请检查 profile-pool.json');
+  process.exit(1);
+}
+log(`📋 配置已加载`);
 
 // ============================================================
 // 工具函数
