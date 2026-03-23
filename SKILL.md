@@ -123,7 +123,27 @@ node extract-detail.js
 5. 图片 URL 格式：`~tplv-fhlh96nyum-origin-jpeg.jpeg`（原始分辨率）
 6. 如果提取偏晚，图片可能随页面滚动被销毁
 
-### 6. 详情要存展开后的真实内容
+### 6. TikTok CDN 图片 URL 清理（重要！）
+**踩坑记录：** 描述区有5张图，但下载后只有2张有效图片，其他3张是46字节错误文件。
+**原因：** URL 清理函数正则写错了，匹配不上 TikTok 新版 CDN 格式。
+**正确格式：** `~tplv-fhlh96nyum-crop-webp:800:1190.webp` → `~tplv-fhlh96nyum-origin.webp`
+**正确清理函数：**
+```javascript
+function cleanDescImgUrl(url) {
+  return url
+    .replace(/~tplv-([a-z0-9]+)-crop-webp:(\d+):(\d+)\.webp/gi, '~tplv-$1-origin.webp')
+    .replace(/~tplv-([a-z0-9]+)-crop-jpeg:(\d+):(\d+)\.jpeg/gi, '~tplv-$1-origin.jpeg')
+    .replace(/~tplv-([a-z0-9]+)-crop-jpg:(\d+):(\d+)\.jpg/gi, '~tplv-$1-origin.jpg')
+    .replace(/~tplv-([a-z0-9]+)-resize-png:(\d+):(\d+)\.png/gi, '~tplv-$1-origin.png');
+}
+```
+
+### 7. 描述图片必须加入 images 数组
+**踩坑记录：** 描述图片下载到了 `desc-images/` 目录，但 `product.json` 的 `images` 数组为空。
+**原因：** 下载和写入 images 数组是两条独立逻辑，漏了合并步骤。
+**正确做法：** 描述图片下载后，文件名加入 `allImages = [...downloadedMain, ...descImages]` 并写入 `descriptionImages` 字段。
+
+### 8. 详情要存展开后的真实内容
 ❌ 错误：存 TikTok 的 meta 广告语（"Buy... on TikTok Shop..."）
 ✅ 正确：点击展开按钮，从 overflow-hidden.transition-all 取 innerText
 
@@ -145,6 +165,68 @@ TKdown/YYYY-MM-DD/001/
 ```
 
 序号自动递增：001, 002, 003...
+
+---
+
+---
+
+## 子代理自动采集
+
+通过 `runner.js` 可以自动调用 AdsPower 浏览器完成全流程采集（开浏览器→采集→下载→关浏览器）。
+
+### 执行命令
+
+```bash
+cd /root/.openclaw/skills/tk2shop
+node runner.js '{"tiktokUrl": "https://shop.tiktok.com/..."}'
+```
+
+或通过环境变量：
+```bash
+TK_TIKTOK_URL="https://shop.tiktok.com/..." node runner.js
+```
+
+### AdsPower 配置文件池
+
+子代理使用的浏览器配置文件编号池定义在技能目录的 `profile-pool.json` 中：
+
+```json
+{
+  "description": "tk2shop 子代理可用的 AdsPower 配置文件编号池",
+  "updated": "2026-03-23",
+  "profiles": [
+    1896381,
+    1896382,
+    1896383,
+    1896384,
+    1896385,
+    1896386,
+    1896387,
+    1896388,
+    1896389,
+    1896390
+  ]
+}
+```
+
+**使用方式：** 直接编辑 `profile-pool.json`，在 `profiles` 数组中添加或删除配置文件编号。脚本启动时会自动读取列表，并按顺序选择第一个空闲的配置文件。
+
+### 返回格式
+
+```json
+{
+  "success": true,
+  "outputDir": "/root/.openclaw/TKdown/2026-03-23/005",
+  "productId": "1774180040216",
+  "title": "商品标题",
+  "images": 13,
+  "mainImages": 9,
+  "descImages": 4,
+  "skus": 4,
+  "price": "$29.99",
+  "message": "采集完成"
+}
+```
 
 ---
 

@@ -3,12 +3,12 @@
  * TikTok Shop 商品详情页采集
  * 
  * 采集流程：
- * 1. 滚动页面触发商品数据渲染
- * 2. 提取商品主图 + SKU 变体
- * 3. 点击 Description 展开，获取图文混排的描述内容（HTML含<img>标签）
- * 4. 下载所有图片（主图+SKU缩略图+描述图）
- * 5. 生成 product.json，description 为含本地图片的 HTML
- * 6. 自动生成 Shopify SEO 标题（shopifyTitle 字段）
+ * 1. 读取环境变量 TK_CDP_URL 或 TK_DEBUG_PORT 获取浏览器连接信息
+ * 2. 滚动页面触发商品数据渲染
+ * 3. 提取商品主图 + SKU 变体
+ * 4. 点击 Description 展开，获取图文混排的描述内容
+ * 5. 下载所有图片（主图 + SKU缩略图 + 描述图）
+ * 6. 生成 product.json
  */
 
 const { chromium } = require('playwright');
@@ -16,321 +16,51 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+const { execSync } = require('child_process');
 
-const CDP_URL = process.env.TK_CDP_URL || 'ws://127.0.0.1:44035/devtools/browser/dc10fec1-c52f-446b-a7d6-c769cf12f0a0';
-const OUTPUT_DIR = '/root/.openclaw/TKdown';
-const MINIMAX_API_KEY = 'sk-cp-Dst9QMV4HgpBuFOpwDxiJAr7CW5dwJZv0kXGGyfpKfNzDRIBJhjgGl2QcsxPtd37gQii7WS2roJZqOuVjNLCiJXCevsxSuO4dnDeHZIh-O8NYZ5FkEz02uY';
-
-/**
- * 调用 MiniMax AI 生成 Shopify 风格营销型产品介绍
- * @param {string} originalTitle - 原始标题
- * @param {string} shopifyTitle - SEO优化标题
- * @param {string} originalDesc - 原始描述文字
- * @param {string[]} images - 描述图片路径列表
- * @returns {Promise<string>} Shopify 风格 HTML
- */
-async function generateShopifyDescriptionAI(originalTitle, shopifyTitle, originalDesc, images) {
-  if (!originalDesc || originalDesc.length < 20) {
-    console.log('⚠️ 原始描述太短，跳过AI生成');
-    return '';
+// ★ 从AdsPower动态获取CDP URL
+function getCdpUrl() {
+  // 优先用环境变量 TK_CDP_URL（完整路径，如 ws://127.0.0.1:42487/devtools/browser/xxx）
+  if (process.env.TK_CDP_URL) return process.env.TK_CDP_URL;
+  
+  // 其次用 TK_DEBUG_PORT（只有端口，需要拼完整路径）
+  if (process.env.TK_DEBUG_PORT) {
+    // 需要再获取 browser ID，先用 npx 获取
+    try {
+      const output = execSync('npx --yes adspower-browser get-opened-browser 2>/dev/null', { timeout: 10000, encoding: 'utf8' });
+      const data = JSON.parse(output);
+      if (data.data && data.data.debug_port && data.data.cdp) {
+        return data.data.cdp; // 完整CDP WebSocket URL
+      }
+    } catch (e) {
+      // 忽略
+    }
+    return `ws://127.0.0.1:${process.env.TK_DEBUG_PORT}`;
   }
-
-  const prompt = `你是一位专业的跨境电商 Shopify 产品文案专家。请根据以下 TikTok Shop 原始产品描述，写一套适合 Shopify 的营销型产品介绍。
-
-## 原始标题
-${originalTitle}
-
-## SEO优化标题
-${shopifyTitle}
-
-## 原始产品描述
-${originalDesc}
-
-## 要求
-1. 风格：营销型，要有感染力，突出产品卖点和使用场景
-2. 结构：要有小标题（<h2>）、段落（<p>）、要点列表（<ul><li>）
-3. 语言：英文，面向欧美市场消费者
-4. 不要臆造产品规格，只基于原始描述里有的信息来写
-5. 禁止使用 Emoji
-6. HTML 要干净，不要有多余的 class 或 style
-7. 总长度适中，不要太长（一般 300~600 词）
-8. 在需要插入图片的位置，用 [IMAGE_PLACEHOLDER_1]、[IMAGE_PLACEHOLDER_2] 这样的占位符表示
-9. 占位符数量不要超过 ${(images || []).length} 个
-
-请直接输出 HTML 内容，不要加markdown代码块标记。`;
-
+  
+  // 尝试从npx adspower-browser获取已打开的浏览器
   try {
-    console.log('🤖 调用 AI 生成 Shopify 风格产品介绍...');
-    const response = await fetch('https://api.minimaxi.com/v1/text/chatcompletion_v2', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${MINIMAX_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'MiniMax-M2.5',
-        messages: [
-          { role: 'user', content: prompt }
-        ],
-        max_tokens: 4000,
-        temperature: 0.7
-      })
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      console.log('⚠️ AI 生成失败:', response.status, errText);
-      return '';
+    const output = execSync('npx --yes adspower-browser get-opened-browser 2>/dev/null', { timeout: 10000, encoding: 'utf8' });
+    const data = JSON.parse(output);
+    if (data.data && data.data.cdp) {
+      return data.data.cdp;
     }
-
-    const data = await response.json();
-    const generatedText = data.choices?.[0]?.message?.content || '';
-
-    if (!generatedText) {
-      console.log('⚠️ AI 返回内容为空');
-      return '';
+    if (data.data && data.data.debug_port) {
+      return `ws://127.0.0.1:${data.data.debug_port}`;
     }
-
-    // 清理可能残留的 markdown 代码块
-    let cleanHtml = generatedText
-      .replace(/^```html\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
-    // 替换图片占位符为真实 <img> 标签
-    if ((images || []).length > 0) {
-      let imgIdx = 0;
-      cleanHtml = cleanHtml.replace(/\[IMAGE_PLACEHOLDER_(\d+)\]/g, (match, num) => {
-        if (imgIdx < images.length) {
-          const imgTag = `<img src="${images[imgIdx]}" alt="product detail ${imgIdx + 1}" style="max-width:100%;margin:16px 0;" />`;
-          imgIdx++;
-          return imgTag;
-        }
-        return '';
-      });
-    }
-
-    console.log('✅ AI 生成完成 (' + cleanHtml.length + ' 字符)');
-    return cleanHtml;
-
   } catch (e) {
-    console.log('⚠️ AI 调用异常:', e.message);
-    return '';
+    // 忽略
   }
+  
+  throw new Error('请设置 TK_CDP_URL（完整路径）或 TK_DEBUG_PORT 环境变量，或确保有已打开的AdsPower浏览器');
 }
+
+const CDP_URL = getCdpUrl();
+const OUTPUT_DIR = process.env.TK_OUTPUT_DIR || '/root/.openclaw/TKdown';
 
 /**
- * 从原始标题和描述生成 Shopify SEO 友好标题
- * @param {string} originalTitle - 原始标题
- * @param {string} description - 商品描述文字
- * @returns {string} SEO友好标题
+ * 下载图片（自动跟随重定向）
  */
-function generateShopifyTitle(originalTitle, description) {
-  if (!originalTitle) return '';
-  
-  // 1. 提取品牌（通常是第一个词）
-  const firstWord = originalTitle.trim().split(/\s+/)[0];
-  const isBrand = firstWord.length > 1 && /^[A-Z][a-zA-Z0-9]*$/.test(firstWord);
-  const brand = isBrand ? firstWord : '';
-  
-  // 2. 从标题和描述中提取产品核心词
-  const lowerTitle = originalTitle.toLowerCase();
-  const lowerDesc = (description || '').toLowerCase();
-  
-  // 定义要查找的卖点关键词（按优先级排序）
-  const featurePatterns = [
-    // 射程/亮度
-    { key: '1000m', label: '1000m Beam', pattern: /1000\s*m(eters?)?\s*(beam|range|throw)/i },
-    { key: 'rechargeable', label: 'Rechargeable', pattern: /rechargeable/i },
-    { key: 'tactical', label: 'Tactical', pattern: /\btactical\b/i },
-    { key: 'zoomable', label: 'Zoomable', pattern: /\bzoom(able)?\b/i },
-    { key: 'waterproof', label: 'Waterproof', pattern: /\bwater\ ?proof\b/i },
-    { key: '6 modes', label: '6 Modes', pattern: /\b6\s*mode/i },
-    { key: '5 modes', label: '5 Modes', pattern: /\b5\s*mode/i },
-    // 电池
-    { key: '5000mah', label: '5000mAh Battery', pattern: /5000\s*mah/i },
-    { key: 'battery', label: 'Battery', pattern: /\bmah\b/i },
-    // 用途
-    { key: 'camping', label: 'Camping', pattern: /\bcamping\b/i },
-    { key: 'outdoor', label: 'Outdoor', pattern: /\boutdoor\b/i },
-    { key: 'emergency', label: 'Emergency', pattern: /\bemergency\b/i },
-    // LED/亮度
-    { key: 'led', label: 'LED', pattern: /\bled\b/i },
-    { key: 'ultrabright', label: 'Ultra-Bright', pattern: /\bultra[\s-]?bright\b/i },
-    { key: 'high lumen', label: 'High Lumen', pattern: /\bhigh\s*lumen\b/i },
-  ];
-  
-  // 从描述中提取射程（特殊处理，因为这个卖点很强）
-  let beamDistance = '';
-  const beamMatch = lowerDesc.match(/(\d+)\s*m(eters?)?\s*(beam|range|throw|distance)/i);
-  if (beamMatch) {
-    beamDistance = beamMatch[1] + 'm Beam';
-  }
-  
-  // 按优先级收集卖点
-  const features = new Set();
-  
-  for (const feat of featurePatterns) {
-    if (feat.key === '1000m') {
-      if (beamDistance) features.add(beamDistance);
-    } else {
-      if (feat.pattern.test(lowerTitle) || feat.pattern.test(lowerDesc)) {
-        features.add(feat.label);
-      }
-    }
-  }
-  
-  // 3. 移除冗余的"电池"描述（如果已经有具体mAh数字）
-  if (features.has('5000mAh Battery') && features.has('Battery')) {
-    features.delete('Battery');
-  }
-  
-  // 4. 构建SEO标题
-  // 格式: 品牌 + 产品核心 + 核心卖点 + 用途
-  const productCore = 'LED Flashlight';
-  
-  // 核心卖点列表（保留最多5个，避免太长）
-  const topFeatures = [];
-  const priorityOrder = ['1000m Beam', 'Rechargeable', 'Tactical', '6 Modes', '5 Modes', 
-                        'Zoomable', 'Waterproof', '5000mAh Battery', 'LED', 'Ultra-Bright',
-                        'High Lumen', 'Camping', 'Outdoor', 'Emergency', 'Battery'];
-  
-  for (const feat of priorityOrder) {
-    if (features.has(feat) && topFeatures.length < 5) {
-      topFeatures.push(feat);
-    }
-  }
-  
-  // 用途（最多2个）
-  const usageTags = [];
-  for (const feat of ['Camping', 'Outdoor', 'Emergency', 'Tactical']) {
-    if (features.has(feat) && usageTags.length < 2) {
-      usageTags.push(feat);
-    }
-  }
-  
-  // 组装标题
-  let seoTitle = brand ? brand + ' ' + productCore : productCore;
-  
-  if (topFeatures.length > 0) {
-    seoTitle += ' - ' + topFeatures.join(', ');
-  }
-  
-  if (usageTags.length > 0 && !seoTitle.includes(usageTags[0])) {
-    seoTitle += ' for ' + usageTags.join(', ');
-  }
-  
-  // 清理多余的逗号和空格
-  seoTitle = seoTitle.replace(/,\s*,/g, ',').replace(/\s+/g, ' ').trim();
-  
-  return seoTitle;
-}
-
-/**
- * 将原始描述文字优化为 Shopify 风格 HTML
- * 保留内容，只调整格式
- * @param {string} text - 原始描述文字（纯文本）
- * @param {string[]} images - 描述图片路径列表，如 ["desc-images/desc_001.jpg", ...]
- * @returns {string} Shopify 风格 HTML
- */
-function optimizeForShopify(text, images) {
-  if (!text && (!images || images.length === 0)) return '';
-  
-  const lines = (text || '').split(/\n/).map(l => l.trim()).filter(l => l.length > 0);
-  const imgList = images || [];
-  let imgIdx = 0;
-  
-  let html = '';
-  let i = 0;
-  
-  while (i < lines.length) {
-    const line = lines[i];
-    const nextLine = lines[i + 1] || '';
-    
-    // 判断是否是标题行：全大写、或全数字开头、或短句（< 30字符且以特殊符号结尾）
-    const isHeading = (
-      /^[A-Z][A-Z\s\d]+$/.test(line) ||                          // 全大写单词
-      /^\d+[\.\)]\s/.test(line) ||                               // "1. xxx" 或 "1) xxx"
-      (line.length < 40 && /[!:\-–—]$/.test(line)) ||            // 短句以冒号/感叹号结尾
-      /^(Features|Specifications|Price|Note|Warning|Benefit)/i.test(line) // 常见标题词
-    );
-    
-    // 判断是否是列表项：短行、以 -、•、*、✓、✔ 开头
-    const isListItem = (
-      /^[•\-\*\+\√✓✔▶]\s/.test(line) ||
-      /^[\-\*\+\–]\s/.test(line) ||
-      /^\d+[\.\)]\s/.test(line)
-    );
-    
-    if (isHeading) {
-      // 标题：去掉末尾标点，生成 <h2>
-      const headingText = line.replace(/[:\!\.\-\–—]+$/, '').trim();
-      if (headingText) {
-        html += `<h2>${headingText}</h2>\n`;
-      }
-      i++;
-    } else if (isListItem) {
-      // 列表开始：收集连续的所有列表项
-      const items = [];
-      while (i < lines.length) {
-        const item = lines[i];
-        if (/^[•\-\*\+\√✓✔▶]\s/.test(item) || /^[\-\*\+\–]\s/.test(item) || /^\d+[\.\)]\s/.test(item)) {
-          // 去掉列表符号，保留文字
-          const cleanItem = item.replace(/^[•\-\*\+\√✓✔▶▶]\s*/, '').replace(/^\d+[\.\)]\s*/, '').trim();
-          if (cleanItem) items.push(cleanItem);
-          i++;
-        } else {
-          break;
-        }
-      }
-      if (items.length > 0) {
-        html += `<ul>\n`;
-        for (const item of items) {
-          html += `  <li>${item}</li>\n`;
-        }
-        html += `</ul>\n`;
-      }
-    } else {
-      // 普通段落：判断是否要在这里插入图片
-      // 规则：每 2~3 个段落后插入一张图片（如果有）
-      const paraCount = (html.match(/<p>/g) || []).length;
-      const shouldInsertImg = imgIdx < imgList.length && paraCount > 0 && paraCount % 3 === 0;
-      
-      if (shouldInsertImg) {
-        html += `<p>${line}</p>\n`;
-        html += `<img src="${imgList[imgIdx]}" alt="product detail" style="max-width:100%;margin:16px 0;" />\n`;
-        imgIdx++;
-      } else {
-        html += `<p>${line}</p>\n`;
-      }
-      i++;
-    }
-  }
-  
-  // 如果还有剩余图片，放在最后
-  while (imgIdx < imgList.length) {
-    html += `<img src="${imgList[imgIdx]}" alt="product detail" style="max-width:100%;margin:16px 0;" />\n`;
-    imgIdx++;
-  }
-  
-  return html.trim();
-}
-
-// 获取当前日期目录下的最大序号
-function getNextSeq(dateDir) {
-  const entries = fs.readdirSync(dateDir, { withFileTypes: true })
-    .filter(e => e.isDirectory())
-    .map(e => parseInt(e.name, 10))
-    .filter(n => !isNaN(n));
-  return entries.length > 0 ? Math.max(...entries) + 1 : 1;
-}
-
-function cleanUrl(url) {
-  if (!url) return '';
-  return url.replace(/~tplv[^\/]+\//, '').split('?')[0];
-}
-
 async function downloadImg(url, dest, retries = 3) {
   if (!url || !url.startsWith('http')) throw new Error('Invalid URL');
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -351,51 +81,70 @@ async function downloadImg(url, dest, retries = 3) {
           file.on('finish', () => { file.close(); resolve(dest); });
         });
         req.on('error', e => { file.close(); reject(e); });
-        req.setTimeout(15000, () => { req.destroy(); reject(new Error('timeout')); });
+        req.setTimeout(20000, () => { req.destroy(); reject(new Error('timeout')); });
       });
       return;
     } catch (e) {
       if (attempt < retries) {
-        console.log(`  ⚠️ 下载失败，重试中 (${attempt}/${retries})`);
+        console.log(`  ⚠️ 下载失败，重试 (${attempt}/${retries}): ${e.message}`);
         await new Promise(r => setTimeout(r, 1000 * attempt));
       } else throw e;
     }
   }
 }
 
-function extractPriceFromPage(page) {
-  return page.evaluate(() => {
-    const titleEl = document.querySelector('h2.H2-Semibold, h2[class*="H2-Semibold"]');
-    if (!titleEl) return { salePrice: '', originalPrice: '' };
-    let container = titleEl;
-    for (let j = 0; j < 5; j++) {
-      container = container.parentElement;
-      if (!container) break;
-      const prices = [];
-      container.querySelectorAll('*').forEach(el => {
-        const t = el.textContent ? el.textContent.trim() : '';
-        if (/^\$\d+\.\d{2}$/.test(t)) prices.push(t);
-      });
-      if (prices.length >= 1) {
-        const nums = prices.map(p => parseFloat(p.replace(/[$,]/g, ''))).sort((a, b) => a - b);
-        return {
-          salePrice: nums[0].toFixed(2),
-          originalPrice: nums.length > 1 && nums[nums.length - 1] > nums[0] ? nums[nums.length - 1].toFixed(2) : ''
-        };
-      }
-    }
-    return { salePrice: '', originalPrice: '' };
-  });
+/**
+ * 清理TikTok CDN URL，提取原始分辨率版本
+ * 例如: https://xxx~tplv-xxx-crop-webp:800:800.jpeg?xxx -> https://xxx~tplv-xxx-origin.jpeg
+ */
+function cleanDescImgUrl(url) {
+  if (!url) return '';
+  // TikTok CDN图片URL格式: xxx~tplv-xxx-crop-webp:800:1190.webp
+  // 提取原始分辨率: 把 crop-xxx:宽:高 替换为 origin
+  // 例如: ~tplv-fhlh96nyum-crop-webp:800:1190.webp -> ~tplv-fhlh96nyum-origin.webp
+  // 例如: ~tplv-fhlh96nyum-crop-webp:970:600.jpeg -> ~tplv-fhlh96nyum-origin.jpeg
+  return url
+    .replace(/~tplv-([a-z0-9]+)-crop-webp:(\d+):(\d+)\.webp/gi, '~tplv-$1-origin.webp')
+    .replace(/~tplv-([a-z0-9]+)-crop-jpeg:(\d+):(\d+)\.jpeg/gi, '~tplv-$1-origin.jpeg')
+    .replace(/~tplv-([a-z0-9]+)-crop-jpg:(\d+):(\d+)\.jpg/gi, '~tplv-$1-origin.jpg')
+    .replace(/~tplv-([a-z0-9]+)-resize-png:(\d+):(\d+)\.png/gi, '~tplv-$1-origin.png')
+    .replace(/~tplv-([a-z0-9]+)-(\w+):(\d+):(\d+)\.(\w+)/gi, '~tplv-$1-origin.$5');
+}
+
+function getNextSeq(dateDir) {
+  if (!fs.existsSync(dateDir)) return 1;
+  const entries = fs.readdirSync(dateDir, { withFileTypes: true })
+    .filter(e => e.isDirectory())
+    .map(e => parseInt(e.name, 10))
+    .filter(n => !isNaN(n));
+  return entries.length > 0 ? Math.max(...entries) + 1 : 1;
 }
 
 async function main() {
   console.log('🔌 连接浏览器...');
+  console.log('   CDP:', CDP_URL);
   const browser = await chromium.connectOverCDP(CDP_URL);
-  const page = browser.contexts()[0].pages()[browser.contexts()[0].pages().length - 1];
+  const ctx = browser.contexts()[0];
+  const page = ctx.pages()[ctx.pages().length - 1];
   const pageUrl = page.url();
   console.log('🌐', pageUrl);
+  
+  // 如果当前不是TikTok Shop商品页（以 /pdp/ 开头），则导航到环境变量 TK_URL 指定的页面
+  const targetUrl = process.env.TK_URL;
+  if (!pageUrl.includes('/pdp/') && targetUrl) {
+    console.log('📍 当前不在商品页，导航到:', targetUrl);
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+  } else if (!pageUrl.includes('/pdp/')) {
+    console.log('⚠️ 当前不在TikTok Shop商品页，请先在AdsPower中打开商品页面');
+    console.log('   或设置 TK_URL 环境变量指定商品页URL');
+    await browser.close();
+    process.exit(1);
+  }
 
   // 滚动加载商品数据
+  await page.evaluate(() => { window.scrollTo(0, 0); });
+  await page.waitForTimeout(1000);
   await page.evaluate(() => { window.scrollTo(0, 300); });
   await page.waitForTimeout(1000);
   await page.evaluate(() => { window.scrollTo(0, 800); });
@@ -403,90 +152,84 @@ async function main() {
 
   // 1. 提取标题
   const title = await page.evaluate(() => {
-    return document.querySelector('meta[property="og:title"]')
-      ? document.querySelector('meta[property="og:title"]').content.replace(/\s*-\s*TikTok\s*Shop\s*$/, '').trim()
-      : '';
+    const el = document.querySelector('meta[property="og:title"]');
+    return el ? el.content.replace(/\s*-\s*TikTok\s*Shop\s*$/, '').trim() : '';
   });
-  console.log('标题:', title.substring(0, 60));
+  console.log('📝 标题:', title.substring(0, 70));
 
   // 2. 提取商品主图
-  const allImages = await page.evaluate(() => {
-    function cleanUrl(url) {
-      if (!url) return '';
-      return url.replace(/~tplv[^\/]+\//, '').split('?')[0];
-    }
-    const containers = document.querySelectorAll('[class*="items-center"][class*="gap-12"][class*="overflow-visible"]');
-    let galleryEl = null;
-    for (const el of containers) {
-      if (el.className.includes('flex-row')) { galleryEl = el; break; }
-    }
-    if (!galleryEl) return [];
-    const imgs = galleryEl.querySelectorAll('picture img, img');
+  const mainImages = await page.evaluate(() => {
+    const container = document.querySelector('[class*="items-center"][class*="gap-12"]');
+    if (!container) return [];
+    const imgs = container.querySelectorAll('img');
     const urls = [];
     for (const img of imgs) {
-      const src = img.src || (img.getAttribute('srcset') || '').split(',')[0].split(' ')[0] || '';
-      if (src.includes('ttcdn') && !src.includes('logo') && !src.includes('icon')) {
-        const clean = cleanUrl(src);
-        if (clean.match(/\.(webp|jpg|png)/i) && !urls.includes(clean)) urls.push(clean);
+      const src = img.currentSrc || img.src;
+      if (src && src.includes('ttcdn') && !src.includes('logo') && !src.includes('icon') && img.naturalWidth > 100) {
+        // 清理URL获取原图
+        const clean = src.replace(/~tplv-[^/]+\/([^/]+)~.*$/, '~tplv-$1/origin.jpeg');
+        if (!urls.includes(clean)) urls.push(clean);
       }
     }
     return urls;
   });
-  console.log('主图数:', allImages.length);
+  console.log('🖼️  主图:', mainImages.length, '张');
 
   // 3. 提取 SKU 变体
   const skuVariants = await page.evaluate(() => {
-    function cleanUrl(url) {
-      if (!url) return '';
-      return url.replace(/~tplv[^\/]+\//, '').split('?')[0];
-    }
-    const container = document.querySelector('[class*="flex-row"][class*="overflow-x-auto"][class*="gap-12"][class*="flex-wrap"]');
+    const container = document.querySelector('[class*="flex-row"][class*="flex-wrap"]');
     if (!container) return [];
     const children = [...container.children];
     return children.map((child, idx) => {
-      const text = child.innerText ? child.innerText.trim() : '';
+      const text = child.innerText ? child.innerText.split('\n')[0].trim() : '';
       const img = child.querySelector('img');
-      const imgSrc = img ? (img.src || (img.getAttribute('srcset') || '').split(',')[0].split(' ')[0] || '') : '';
-      const cleanImg = imgSrc.includes('ttcdn') ? cleanUrl(imgSrc) : '';
+      const imgSrc = img ? (img.currentSrc || img.src || '') : '';
+      const cleanImg = imgSrc.includes('ttcdn') 
+        ? imgSrc.replace(/~tplv-[^/]+\/([^/]+)~.*$/, '~tplv-$1/origin.jpeg') 
+        : '';
       return { index: idx, name: text || 'SKU ' + (idx + 1), thumbnail: cleanImg };
-    });
+    }).filter(v => v.name && v.name.length < 100);
   });
-  console.log('SKU 变体:', skuVariants.map(s => s.name).join(', '));
+  console.log('📦 SKU:', skuVariants.length, '个');
+  skuVariants.forEach(v => console.log('   -', v.name));
 
-  // 4. 点击每个 SKU，获取价格
-  console.log('💡 点击每个 SKU 并提取价格...');
+  // 4. 点击每个 SKU 获取价格
+  console.log('\n💡 提取各SKU价格...');
   const skuDetails = [];
 
   for (let i = 0; i < skuVariants.length; i++) {
-    const clicked = await page.evaluate((idx) => {
-      const container = document.querySelector('[class*="flex-row"][class*="overflow-x-auto"][class*="gap-12"][class*="flex-wrap"]');
-      if (!container) return false;
+    await page.evaluate((idx) => {
+      const container = document.querySelector('[class*="flex-row"][class*="flex-wrap"]');
+      if (!container) return;
       const children = [...container.children];
-      if (!children[idx]) return false;
-      children[idx].click();
-      return true;
+      if (children[idx]) children[idx].click();
     }, i);
     await page.waitForTimeout(800);
 
-    const priceData = await extractPriceFromPage(page);
-    skuDetails.push({
-      sku: skuVariants[i].name,
-      thumbnail: skuVariants[i].thumbnail,
-      price: priceData.salePrice,
-      compareAtPrice: priceData.originalPrice,
-      detail: '',
-      inventoryQuantity: 100
+    const priceData = await page.evaluate(() => {
+      const spans = document.querySelectorAll('span');
+      for (const s of spans) {
+        if (/^\$[\d.]+$/.test(s.innerText.trim())) {
+          return s.innerText.trim();
+        }
+      }
+      return '';
     });
-    console.log('  ' + skuVariants[i].name + ': $' + priceData.salePrice + (priceData.originalPrice ? ' → $' + priceData.originalPrice : ''));
+    skuDetails.push({
+      name: skuVariants[i].name,
+      thumbnail: skuVariants[i].thumbnail,
+      price: priceData.replace('$', ''),
+      detail: ''
+    });
+    console.log('   ' + skuVariants[i].name + ': ' + priceData);
   }
 
-  // 5. ★ 提取图文混排的描述内容 ★
-  console.log('\n📝 提取图文混排描述内容...');
-  
-  // 回到顶部，点击 Description 展开
+  // 5. ★ 提取图文混排的描述内容（关键！）
+  console.log('\n📝 提取图文描述...');
   await page.evaluate(() => { window.scrollTo(0, 0); });
   await page.waitForTimeout(1000);
   
+  // 点击 Description 展开按钮
   const descBtnClicked = await page.evaluate(() => {
     const spans = document.querySelectorAll('span');
     for (const span of spans) {
@@ -498,50 +241,35 @@ async function main() {
     return false;
   });
   await page.waitForTimeout(1500);
-  
-  if (!descBtnClicked) {
-    console.log('⚠️ 未找到 Description 按钮，尝试备用方式...');
-  }
+  console.log('   展开按钮:', descBtnClicked ? '✅' : '⚠️ 未找到');
 
-  // 获取图文混排描述 HTML 和图片列表
+  // 从展开区域提取文字和图片
   const descResult = await page.evaluate(() => {
-    const results = { html: '', images: [], text: '' };
+    const results = { text: '', images: [] };
     
-    // 找到 overflow-hidden + transition-all 的 div
+    // 找 overflow-hidden + transition-all 的 div
     const divs = document.querySelectorAll('div');
     for (const div of divs) {
       const cn = div.className || '';
       if (cn.includes('overflow-hidden') && cn.includes('transition-all')) {
-        // 获取纯文本
         results.text = div.innerText || '';
-        
-        // 获取所有图片
         const imgs = div.querySelectorAll('img');
         for (const img of imgs) {
-          const src = img.src || img.getAttribute('data-src') || '';
-          if (src && !src.includes('favicon') && !src.includes('logo') && !src.includes('tts_logo') && img.naturalWidth > 50) {
-            // 转为原始分辨率 URL
-            let origUrl = src
-              .replace(/~tplv-fhlh96nyum-crop-webp:\d+:\d+\.webp/, '~tplv-fhlh96nyum-origin-webp.webp')
-              .replace(/~tplv-fhlh96nyum-crop-webp:\d+:\d+\.jpeg/, '~tplv-fhlh96nyum-origin-jpeg.jpeg')
-              .replace(/~tplv-fhlh96nyum-resize-png:\d+:\d+\.png/, '~tplv-fhlh96nyum-origin-png.png');
-            results.images.push(origUrl);
+          if (img.naturalWidth < 50) continue;
+          const src = img.currentSrc || img.src;
+          if (src && !src.includes('favicon') && !src.includes('logo') && !src.includes('tts_logo') && src.includes('ttcdn')) {
+            results.images.push(src);
           }
         }
-        
-        // 获取内部 HTML，替换图片 src 为占位符（后续替换为本地文件名）
-        results.html = div.innerHTML || '';
         break;
       }
     }
-    
     return results;
   });
-  
-  console.log('描述文字长度:', descResult.text.length, '字符');
-  console.log('描述图片数:', descResult.images.length);
-  
-  // 6. 生成目录
+  console.log('   描述文字:', descResult.text.length, '字符');
+  console.log('   描述图片:', descResult.images.length, '张');
+
+  // 6. 创建输出目录
   const today = new Date().toISOString().split('T')[0];
   const productId = pageUrl.match(/\/(\d+)\?/) ? pageUrl.match(/\/(\d+)\?/)[1] : Date.now().toString();
   const dateDir = path.join(OUTPUT_DIR, today);
@@ -549,146 +277,92 @@ async function main() {
   const nextSeq = getNextSeq(dateDir);
   const seqStr = String(nextSeq).padStart(3, '0');
   const outDir = path.join(dateDir, seqStr);
-  fs.mkdirSync(outDir, { recursive: true });
   fs.mkdirSync(path.join(outDir, 'images'), { recursive: true });
-  fs.mkdirSync(path.join(outDir, 'desc-images'), { recursive: true });
   fs.mkdirSync(path.join(outDir, 'sku'), { recursive: true });
-  console.log('\n📁 输出目录:', outDir);
+  console.log('\n📁 输出:', outDir);
 
   // 7. 下载主图
   console.log('\n📥 下载主图...');
-  const downloaded = [];
-  for (let i = 0; i < allImages.length; i++) {
-    const ext = allImages[i].match(/\.(webp|png|jpg)(\?|$)/i)
-      ? allImages[i].match(/\.(webp|png|jpg)/i)[1]
-      : 'jpg';
+  const downloadedMain = [];
+  for (let i = 0; i < mainImages.length; i++) {
+    const url = mainImages[i];
+    const ext = url.includes('.png') ? 'png' : 'jpg';
     const filename = String(i + 1).padStart(3, '0') + '.' + ext;
     try {
-      await downloadImg(allImages[i], path.join(outDir, 'images', filename));
-      downloaded.push(filename);
-      console.log('  ✅ ' + filename);
+      await downloadImg(url, path.join(outDir, 'images', filename));
+      const sz = fs.statSync(path.join(outDir, 'images', filename)).size;
+      downloadedMain.push(filename);
+      console.log(`   ✅ ${filename} (${sz}B)`);
     } catch (e) {
-      console.log('  ❌ ' + filename + ' 失败: ' + e.message);
+      console.log(`   ❌ ${filename}: ${e.message}`);
     }
   }
 
-  // 下载 SKU 缩略图
+  // 8. 下载 SKU 缩略图
+  console.log('\n📥 下载SKU缩略图...');
   for (let i = 0; i < skuDetails.length; i++) {
     if (skuDetails[i].thumbnail) {
-      const ext = skuDetails[i].thumbnail.match(/\.(webp|png|jpg)(\?|$)/i)
-        ? skuDetails[i].thumbnail.match(/\.(webp|png|jpg)/i)[1]
-        : 'jpg';
-      const filename = 'sku_' + String(i + 1).padStart(2, '0') + '_' + skuDetails[i].sku.replace(/[^a-zA-Z0-9]/g, '_') + '.' + ext;
+      const safeName = skuDetails[i].name.replace(/[\/\\:*?"<>|]/g, '_');
+      const filename = `sku_${String(i + 1).padStart(2, '0')}_${safeName}.jpg`;
       try {
         await downloadImg(skuDetails[i].thumbnail, path.join(outDir, 'sku', filename));
+        const sz = fs.statSync(path.join(outDir, 'sku', filename)).size;
         skuDetails[i].thumbnailFile = filename;
-        console.log('  ✅ SKU缩略图: ' + filename);
+        console.log(`   ✅ SKU ${i+1}: ${filename} (${sz}B)`);
       } catch (e) {
-        console.log('  ⚠️ SKU缩略图: ' + filename + ' 失败');
+        console.log(`   ❌ SKU ${i+1}: ${e.message}`);
       }
     }
   }
 
-  // 下载描述图片，替换 HTML 中的图片 URL 为本地文件名
+  // 9. ★ 下载描述图片（关键修复！）
   console.log('\n📥 下载描述图片...');
-  let descHtmlModified = descResult.html;
   const descImages = [];
   
-  // 从 HTML 中直接提取真实存在的图片 URL（带尺寸参数的原版 URL）
-  const htmlImgUrls = [];
-  const imgSrcSet = {};
-  
-  // 用正则从 HTML 中提取所有 img 标签的 src 和 srcset
-  const imgRegex = /<img[^>]+src=["']([^"']+)["'][^>]*>/gi;
-  let match;
-  while ((match = imgRegex.exec(descResult.html)) !== null) {
-    const fullTag = match[0];
-    const src = match[1];
-    
-    // 提取 srcset 如果有
-    const srcsetMatch = fullTag.match(/srcset=["']([^"']+)["']/i);
-    let hiResUrl = src;
-    
-    if (srcsetMatch) {
-      // srcset 格式: url size, url size, ...
-      const parts = srcsetMatch[1].split(',').map(p => p.trim());
-      // 找最大尺寸的 URL
-      let maxSize = 0;
-      for (const part of parts) {
-        const urlPart = part.split(' ')[0];
-        const sizeMatch = part.match(/(\d+)w/);
-        const size = sizeMatch ? parseInt(sizeMatch[1]) : 0;
-        if (size >= maxSize && urlPart.includes('ttcdn')) {
-          maxSize = size;
-          hiResUrl = urlPart;
-        }
-      }
-    }
-    
-    if (src && !src.includes('favicon') && !src.includes('logo') && !src.includes('tts_logo')) {
-      // 去重（同一个 URL 可能出现多次）
-      if (!imgSrcSet[src]) {
-        imgSrcSet[src] = hiResUrl !== src ? hiResUrl : src;
-      }
-    }
-  }
-  
-  // 遍历去重后的 URL，下载并记录映射
-  const downloadedUrls = [];
-  for (const [origUrl, hiResUrl] of Object.entries(imgSrcSet)) {
-    if (downloadedUrls.includes(origUrl)) continue;
-    downloadedUrls.push(origUrl);
-    
-    // 优先用高分辨率版本
-    const downloadUrl = hiResUrl && hiResUrl !== origUrl && hiResUrl.startsWith('http') ? hiResUrl : origUrl;
-    const ext = downloadUrl.match(/\.(jpeg|jpg|png|webp)(\?|$)/i)
-      ? downloadUrl.match(/\.(jpeg|jpg|png|webp)/i)[1]
-      : 'jpg';
-    const filename = 'desc_' + String(descImages.length + 1).padStart(3, '0') + '.' + ext;
+  // 对每个描述图片URL：
+  // 1. 清理URL获取原始分辨率
+  // 2. 下载
+  // 3. 记录本地文件名
+  for (let i = 0; i < descResult.images.length; i++) {
+    const rawUrl = descResult.images[i];
+    const cleanUrl = cleanDescImgUrl(rawUrl);
+    const ext = cleanUrl.includes('.png') ? 'png' : 'jpeg';
+    const filename = `desc_${String(i + 1).padStart(3, '0')}.${ext}`;
     
     try {
-      await downloadImg(downloadUrl, path.join(outDir, 'desc-images', filename));
-      descImages.push('desc-images/' + filename);
-      console.log('  ✅ desc-images/' + filename + ' (' + origUrl.substring(0, 50) + '...)');
-      
-      // 替换 HTML 中的这个 URL（原始尺寸 URL）为本地文件名
-      // 同时处理 src 和 srcset
-      const escapedSrc = origUrl.replace(/[.?*+^$|\\[\]{}()]/g, '\\$&');
-      descHtmlModified = descHtmlModified.replace(new RegExp(escapedSrc, 'g'), 'desc-images/' + filename);
-      
-      // srcset 中的 URL 也替换
-      if (hiResUrl && hiResUrl !== origUrl) {
-        const escapedHiRes = hiResUrl.replace(/[.?*+^$|\\[\]{}()]/g, '\\$&');
-        descHtmlModified = descHtmlModified.replace(new RegExp(escapedHiRes, 'g'), 'desc-images/' + filename);
-      }
+      await downloadImg(cleanUrl, path.join(outDir, 'images', filename));
+      const sz = fs.statSync(path.join(outDir, 'images', filename)).size;
+      descImages.push(filename);
+      console.log(`   ✅ ${filename} (${sz}B) from ${rawUrl.slice(0,60)}`);
     } catch (e) {
-      console.log('  ❌ ' + filename + ' 失败: ' + e.message);
+      console.log(`   ❌ desc_${i+1}: ${e.message}`);
+      // 下载失败就用原始URL试试
+      try {
+        await downloadImg(rawUrl, path.join(outDir, 'images', filename));
+        const sz2 = fs.statSync(path.join(outDir, 'images', filename)).size;
+        if (sz2 > 1000) {
+          descImages.push(filename);
+          console.log(`   ⚠️ 用原始URL下载成功: ${filename} (${sz2}B)`);
+        }
+      } catch (e2) {
+        console.log(`   ❌ 原始URL也失败`);
+      }
     }
   }
-  
-  // ★ Shopify 风格优化：保留内容，只调格式
-  let cleanDescHtml = optimizeForShopify(descResult.text, descImages);
 
-  // 8. 生成 product.json
-  const defaultPrice = skuDetails.length > 0 && skuDetails[0].price ? skuDetails[0].price : '';
-  const defaultCompareAt = skuDetails.length > 0 && skuDetails[0].compareAtPrice ? skuDetails[0].compareAtPrice : '';
-
-  // 9. 生成 Shopify SEO 标题
-  const shopifyTitle = generateShopifyTitle(title, descResult.text);
-
-  // ★ 10. AI 生成 Shopify 风格营销型产品介绍
-  const descriptionAi = await generateShopifyDescriptionAI(title, shopifyTitle, descResult.text, descImages);
+  // 10. 组装 product.json
+  const allImages = [...downloadedMain, ...descImages];
+  const defaultPrice = skuDetails[0]?.price || '';
+  const defaultCompareAt = '';
 
   const productJson = {
     title: title,
-    shopifyTitle: shopifyTitle,
-    descriptionHtml: cleanDescHtml,
-    descriptionAi: descriptionAi || undefined,
+    description: descResult.text,
     price: defaultPrice,
     compareAtPrice: defaultCompareAt,
     sku: 'TK-' + productId,
     status: 'active',
-    images: downloaded,
+    images: allImages,
     descriptionImages: descImages,
     _meta: {
       productId: productId,
@@ -697,31 +371,33 @@ async function main() {
       source: 'tiktok-shop-detail',
       extractedAt: new Date().toISOString(),
       skus: skuDetails.map(s => ({
-        name: s.sku,
+        name: s.name,
         thumbnail: s.thumbnailFile || '',
         price: s.price,
-        compareAtPrice: s.compareAtPrice,
-        inventoryQuantity: s.inventoryQuantity
+        detail: s.detail
       }))
     }
   };
 
   fs.writeFileSync(path.join(outDir, 'product.json'), JSON.stringify(productJson, null, 2));
 
-  console.log('\n✅ 完成！');
-  console.log('📁 ' + outDir);
-  console.log('🏷️ 原始标题: ' + title.substring(0, 60));
-  console.log('🏷️ Shopify标题: ' + shopifyTitle.substring(0, 70));
-  console.log('💰 $' + defaultPrice + (defaultCompareAt ? ' → $' + defaultCompareAt : ''));
-  console.log('🖼️  主图: ' + downloaded.length + ' 张 | 描述图: ' + descImages.length + ' 张');
-  console.log('📦 SKU: ' + skuDetails.length + ' 个');
-  console.log('📝 描述文字: ' + descResult.text.length + ' 字符');
-  if (descriptionAi) {
-    console.log('✨ AI营销文案: ' + descriptionAi.length + ' 字符');
-  } else {
-    console.log('⚠️ AI营销文案未生成');
-  }
-  browser.close();
+  console.log('\n========================================');
+  console.log('✅ 采集完成！');
+  console.log('========================================');
+  console.log('📁 目录:', outDir);
+  console.log('📝 标题:', title.substring(0, 70));
+  console.log('💰 价格:', '$' + defaultPrice);
+  console.log('🖼️  主图:', downloadedMain.length, '张');
+  console.log('🖼️  描述图:', descImages.length, '张（含在images数组中）');
+  console.log('📦 SKU:', skuDetails.length, '个');
+  console.log('📝 描述文字:', descResult.text.length, '字符');
+  
+  await browser.close();
+  process.exit(0);
 }
 
-main().catch(e => { console.error('❌', e.message); process.exit(1); });
+main().catch(e => { 
+  console.error('❌ 错误:', e.message); 
+  console.error(e.stack);
+  process.exit(1); 
+});
