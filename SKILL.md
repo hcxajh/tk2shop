@@ -230,6 +230,38 @@ TK_TIKTOK_URL="https://shop.tiktok.com/..." node runner.js
 
 ---
 
+## 商品发布到 Shopify
+
+采集完成后，可将 product.json 发布到 Shopify 店铺。
+
+### 发布命令
+
+```bash
+cd /root/.openclaw/skills/tk2shop
+# 方式1：直接指定采集目录
+node upload-product.js 2026-03-23/008
+
+# 方式2：指定 CDP URL
+CDP_URL="ws://127.0.0.1:xxx/devtools/browser/xxx" node upload-product.js 2026-03-23/008
+```
+
+### 前提条件
+
+- AdsPower 浏览器已打开 Shopify 后台（admin.shopify.com）并登录
+- 浏览器需打开任意一个 Shopify 店铺的 admin 页面（脚本会自动识别 store）
+- CDP_URL 环境变量可指定特定浏览器的 CDP 地址
+
+### 发布流程
+
+1. 上传商品主图到 Shopify Media
+2. 填写标题、价格（现价 + 划线价）
+3. 填写 SKU
+4. 填写商品描述（支持 descriptionBlocks 图文混排）
+5. 上传描述图片
+6. 设置为 Active 状态并保存
+
+---
+
 ## 注意事项
 
 - 采集前页面需滚动到商品区域，否则数据未渲染
