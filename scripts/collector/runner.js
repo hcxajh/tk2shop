@@ -412,42 +412,120 @@ async function extract(browser, page, tiktokUrl) {
   await page.evaluate(() => { window.scrollTo(0, 0); });
   await page.waitForTimeout(1000);
   const descBtnClicked = await page.evaluate(() => {
-    const spans = document.querySelectorAll('span');
-    for (const span of spans) {
-      if (span.innerText.includes('Description') || span.innerText.includes('Details')) {
-        span.click(); return true;
+    const candidates = Array.from(document.querySelectorAll('span,button,div'));
+    for (const el of candidates) {
+      const text = (el.innerText || '').trim();
+      if (!text) continue;
+      if (text.includes('Description') || text.includes('Details') || text.includes('About this product')) {
+        el.click();
+        return true;
       }
     }
     return false;
   });
   await page.waitForTimeout(1500);
-  log(`📝 描述展开: ${descBtnClicked ? '✅' : '⚠️'}`);
 
-  const descResult = await page.evaluate(() => {
-    const result = { text: '', images: [] };
-    // 优先用师父给的选择器：div.flex.flex-col.mt-40.w-full
-    let targetDiv = document.querySelector('[class*="flex-col"][class*="mt-40"][class*="w-full"]');
-    if (!targetDiv) {
-      // 备用：用旧逻辑找
-      const divs = document.querySelectorAll('div');
-      for (const div of divs) {
-        const cn = div.className || '';
-        if (cn.includes('overflow-hidden') && cn.includes('transition-all')) {
-          targetDiv = div; break;
+  const moreBtnClicked = await page.evaluate(() => {
+    const hasTargetClass = (el) => {
+      const cn = el.className || '';
+      return cn.includes('Headline-Semibold') &&
+        cn.includes('text-color-UIText1') &&
+        cn.includes('background-color-UIShapeNeutral4') &&
+        cn.includes('px-24') &&
+        cn.includes('py-13');
+    };
+
+    const candidates = Array.from(document.querySelectorAll('span,button,div,a'));
+
+    // 优先匹配：文案 + 样式
+    for (const el of candidates) {
+      const text = (el.innerText || '').trim();
+      if (!text) continue;
+      if ((text.includes('查看更多') || text.includes('See more') || text.includes('Show more')) && hasTargetClass(el)) {
+        el.click();
+        return 'style+text';
+      }
+    }
+
+    // 兜底1：只看文案
+    for (const el of candidates) {
+      const text = (el.innerText || '').trim();
+      if (!text) continue;
+      if (text.includes('查看更多') || text.includes('See more') || text.includes('Show more')) {
+        el.click();
+        return 'text';
+      }
+    }
+
+    // 兜底2：只看样式
+    for (const el of candidates) {
+      if (hasTargetClass(el)) {
+        const text = (el.innerText || '').trim();
+        if (!text || text.length <= 20) {
+          el.click();
+          return 'style';
         }
       }
     }
-    if (targetDiv) {
-      result.text = targetDiv.innerText || '';
+
+    return '';
+  });
+  await page.waitForTimeout(1500);
+  log(`📝 描述展开: ${descBtnClicked ? '✅' : '⚠️'}`);
+  log(`📝 查看更多: ${moreBtnClicked ? '✅ ' + moreBtnClicked : '⚠️'}`);
+
+  const descResult = await page.evaluate(() => {
+    const result = { text: '', images: [] };
+    const collectFrom = (targetDiv) => {
+      if (!targetDiv) return null;
+      const text = (targetDiv.innerText || '').trim();
+      const images = [];
       const imgs = targetDiv.querySelectorAll('img');
       for (const img of imgs) {
         if (img.naturalWidth < 50) continue;
         const src = img.currentSrc || img.src;
         if (src && !src.includes('favicon') && !src.includes('logo') && !src.includes('tts_logo') && src.includes('ttcdn')) {
-          result.images.push(src);
+          images.push(src);
         }
       }
+      return { text, images };
+    };
+
+    const candidates = [];
+
+    // 优先用师父给的选择器：div.flex.flex-col.mt-40.w-full
+    const direct = document.querySelector('[class*="flex-col"][class*="mt-40"][class*="w-full"]');
+    if (direct) candidates.push(direct);
+
+    // 备用：用旧逻辑找展开容器
+    for (const div of document.querySelectorAll('div')) {
+      const cn = div.className || '';
+      if (cn.includes('overflow-hidden') && cn.includes('transition-all')) {
+        candidates.push(div);
+      }
     }
+
+    // 再兜底：挑包含产品描述关键词且文本最长的块
+    for (const div of document.querySelectorAll('div')) {
+      const text = (div.innerText || '').trim();
+      if (!text || text.length < 80) continue;
+      if (text.includes('About this product') || text.includes('Product description') || text.includes('Details') || text.includes('Description')) {
+        candidates.push(div);
+      }
+    }
+
+    let best = { text: '', images: [] };
+    const seen = new Set();
+    for (const el of candidates) {
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+      const current = collectFrom(el);
+      if (!current) continue;
+      if (current.text.length > best.text.length) best = current;
+    }
+
+    result.text = best.text;
+    result.images = best.images;
     return result;
   });
   log(`📝 描述文字: ${descResult.text.length} 字符`);

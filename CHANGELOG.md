@@ -1,5 +1,28 @@
 # CHANGELOG - tk2shop
 
+## v0.3.13 (2026-03-24)
+
+### 修复：商品介绍区需二次点击“查看更多”时，完整描述与描述图采集不中断
+
+**修复内容：**
+- `runner.js` 的描述采集逻辑改为两阶段展开：
+  - 先点击 `Description / Details / About this product`
+  - 再单独点击 `查看更多 / See more / Show more`
+- 针对用户提供的 `span` 样式做优先匹配：
+  - `Headline-Semibold`
+  - `text-color-UIText1`
+  - `background-color-UIShapeNeutral4`
+  - `px-24`
+  - `py-13`
+- 同时增加兜底逻辑：
+  - 只看文案匹配
+  - 只看样式匹配
+- 描述容器提取改为多候选块中选取文本最长者，提升完整描述命中率
+- 已用 `/037` 样例验证通过：
+  - `📝 查看更多: ✅ text`
+  - `描述文字: 7874 字符`
+  - `描述图片: 24 张`
+
 ## v0.3.12 (2026-03-24)
 
 ### 修复：import-csv-onestop.js 显式进入目标 Shopify 店铺后台
