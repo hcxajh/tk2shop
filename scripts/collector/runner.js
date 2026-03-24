@@ -117,46 +117,56 @@ function isProfileActive(profileNo) {
 }
 
 function findAvailableProfile() {
-  // 用 get-browser-active 逐个检查配置文件是否空闲
+  // 优先找空闲的 profile
   for (const profileNo of PROFILE_POOL) {
     if (!isProfileActive(profileNo)) {
       log(`   配置文件 ${profileNo} 空闲`);
       return profileNo;
     }
-    log(`   配置文件 ${profileNo} 忙碌，跳过`);
+    log(`   配置文件 ${profileNo} 忙碌`);
   }
-  // 如果都满了，返回第一个（让它排队）
-  log('⚠️ 所有配置文件均在使用中，复用第一个');
+  // 所有 profile 都忙碌 — 返回第一个，让 openBrowser 尝试复用
+  log('⚠️ 所有配置文件均在使用中，将尝试复用第一个');
   return PROFILE_POOL[0];
 }
 
 /**
- * 打开或复用AdsPower浏览器，获取Playwright CDP URL
+ * 打开或复用 AdsPower 浏览器，获取 Playwright CDP URL
+ *
+ * 三段式逻辑：
+ * 1. profile 已 active → 尝试从 list 获取已有 CDP URL 复用（isNew=false）
+ * 2. 复用失败 → 显式关闭旧浏览器，再打开新的（isNew=true）
+ * 3. profile 未 active → 直接打开新浏览器（isNew=true）
+ *
  * @returns {{ cdpUrl: string, isNew: boolean }}
- *   - isNew=true: 本次新建的CDP连接，需要用完关闭浏览器
- *   - isNew=false: 复用的已有连接，用完只断开不关浏览器
  */
 function openBrowser(profileNo) {
-  // 先检查是否已有浏览器运行（与 upload-product.js 一致）
   if (isProfileActive(profileNo)) {
-    log(`🔁 检测到 profile ${profileNo} 已有浏览器运行，尝试连接...`);
+    // ---- 阶段1：尝试复用已有浏览器 ----
+    log(`🔁 检测到 profile ${profileNo} 已有浏览器运行，尝试复用...`);
     try {
-      const out = execSync(
+      const listOut = execSync(
         `npx --yes adspower-browser list 2>/dev/null`,
         { encoding: 'utf8', timeout: 15000 }
       );
-      const data = JSON.parse(out);
+      const data = JSON.parse(listOut);
       const browserInfo = (data.data || []).find(b => b.user_id === String(profileNo));
       if (browserInfo && browserInfo.webdriver && browserInfo.webdriver.startsWith('ws')) {
         log(`🔌 复用已有 CDP: ${browserInfo.webdriver}`);
         return { cdpUrl: browserInfo.webdriver, isNew: false };
       }
+      log(`   list 未返回有效 webdriver URL`);
     } catch (e) {
-      log(`   列表查询失败，将重新打开: ${e.message}`);
+      log(`   列表查询失败: ${e.message}`);
     }
-    throw new Error(`profile ${profileNo} 的浏览器已被其他进程占用，请先关闭后再试`);
+
+    // ---- 阶段2：复用失败，显式关旧再开新 ----
+    log(`   复用失败，先关闭旧浏览器再打开新的...`);
+    closeBrowser(profileNo);
+    execSync('sleep 2', { encoding: 'utf8', timeout: 5000 });
   }
 
+  // ---- 阶段3：打开新浏览器 ----
   log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
   const jsonArg = `{"profileNo":"${profileNo}"}`;
   const out = execSync(
@@ -165,12 +175,11 @@ function openBrowser(profileNo) {
   );
   log('   ' + out.trim().split('\n').slice(-2).join(' '));
 
-  // 解析CDP URL
   const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
   if (!match) throw new Error('无法获取 CDP URL: ' + out);
   log(`🔌 CDP: ${match[1]} (新建连接)`);
 
-  // 等待Chrome完全启动（避免连接失败）
+  // 等待 Chrome 完全启动（避免连接失败）
   log(`   等待Chrome启动...`);
   execSync(`sleep 3`, { encoding: 'utf8', timeout: 10000 });
 
@@ -484,14 +493,12 @@ async function main() {
     browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
     const ctx = browser.contexts()[0];
 
-    // 先关闭所有已存在的 tabs，只保留新创建的一个
-    const existingPages = ctx.pages();
-    if (existingPages.length > 1) {
-      for (const p of existingPages) {
-        if (!p.isClosed()) await p.close().catch(() => {});
-      }
+    // 先新建 Tab，再关闭旧的（确保始终有 tab 存在，避免浏览器因 0 tab 关闭）
+    pg = await ctx.newPage();
+    const existingPages = ctx.pages().filter(p => p !== pg);
+    for (const p of existingPages) {
+      if (!p.isClosed()) await p.close().catch(() => {});
     }
-    pg = await ctx.newPage();  // 新建Tab
 
     // 4. 执行采集
     const data = await extract(browser, pg, tiktokUrl);
