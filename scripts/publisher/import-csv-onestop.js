@@ -57,7 +57,7 @@ if (!productDir) throw new Error('用法: node import-csv-onestop.js <商品目�
 
 const store = findStore(storeQuery);
 const PROFILE_NO = String(store.profileNo);
-const SHOP = store.shopifySlug;
+// URL 直接用 https://admin.shopify.com（Shopify 自动跳转当前登录店铺）
 
 // CSV 路径
 const CSV_ORIGINAL = path.join('/root/.openclaw/TKdown', productDir, 'product.csv');
@@ -221,7 +221,7 @@ async function importToShopify(csvPath) {
 
     // 1. 打开 Products 页面
     log(`🚀 打开 Shopify Products 页面...`);
-    await pg.goto(`https://admin.shopify.com/store/${SHOP}/products`, {
+    await pg.goto(`https://admin.shopify.com/products`, {
       timeout: 40000,
       waitUntil: 'domcontentloaded'
     });
@@ -378,7 +378,7 @@ async function importToShopify(csvPath) {
 // ==================== 主流程 ====================
 async function main() {
   log(`📦 导入商品: ${productDir}`);
-  log(`   店铺: ${store.name} (${SHOP})`);
+  log(`   店铺: ${store.name} (${store.profileNo})`);
   log(`   Profile: ${PROFILE_NO}`);
 
   // Step 1: 处理 CSV（图片上传 + 路径替换）

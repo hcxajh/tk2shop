@@ -1,12 +1,11 @@
 {
   "description": "tk2shop 店铺配置表",
-  "updated": "2026-03-23",
+  "updated": "2026-03-24",
   "stores": [
     {
-      "storeId": "example",
-      "name": "示例店铺",
-      "profileNo": 1895750,
-      "shopifySlug": "example"
+      "storeId": "vellin1122",
+      "name": "vellin1122",
+      "profileNo": 1896325
     }
   ]
 }
