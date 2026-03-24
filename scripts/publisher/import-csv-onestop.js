@@ -192,8 +192,15 @@ function openBrowser(profileNo) {
 }
 
 function closeBrowser(profileNo) {
-  try { execSync(`npx --yes adspower-browser close-browser '{"profileNo":"${profileNo}"}' 2>&`, {encoding:'utf8', timeout:30000}); }
-  catch (e) {}
+  return new Promise((resolve) => {
+    try {
+      const { spawn } = require('child_process');
+      const jsonArg = JSON.stringify({ profileNo: profileNo });
+      const p = spawn('npx', ['--yes', 'adspower-browser', 'close-browser', jsonArg], { timeout: 30000 });
+      p.on('close', () => resolve());
+      p.on('error', () => resolve());
+    } catch (e) { resolve(); }
+  });
 }
 
 // ==================== 浏览器导入 ====================
@@ -365,7 +372,7 @@ async function importToShopify(csvPath) {
         log('🔓 关闭浏览器 (新建CDP连接)');
         try { await browser.close(); } catch (e) {}
       }
-      closeBrowser(PROFILE_NO);
+      await closeBrowser(PROFILE_NO);
     } else if (browser) {
       log('🔗 断开CDP连接 (复用已有浏览器)');
       try { await browser.disconnect(); } catch (e) {}

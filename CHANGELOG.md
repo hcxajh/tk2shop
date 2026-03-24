@@ -18,6 +18,13 @@
 - 等待循环同时检测文件信号和浏览器窗口状态
 - 浏览器被外部关闭时自动退出等待，避免脚本卡死
 
+### 修复：runner.js 和 to-csv.js CSV导入Shopify报错修复
+
+- runner.js: product.json保存时加上variants数据（之前只有title/description/price/images）
+- to-csv.js: 适配product.variants字段（之前用的是_meta.skus）
+- to-csv.js: 主产品行Option1/2 value填第一个变体的值
+- to-csv.js: Option2 Linked To填product.metafields.shopify.color-pattern
+
 ### 修复：import-csv-onestop.js openBrowser execSync 语法错误
 
 - 改用 spawn 异步调用 adspower-browser，避免 shell 引号转义问题
