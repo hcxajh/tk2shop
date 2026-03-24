@@ -256,7 +256,7 @@ async function extract(browser, page, tiktokUrl) {
 
   // 2. 主图
   const mainImages = await page.evaluate(() => {
-    const container = document.querySelector('[class*="items-center"][class*="gap-12"]');
+    const container = document.querySelector('[class*="items-center"][class*="gap-12"][class*="overflow-x-scroll"]');
     if (!container) return [];
     const imgs = container.querySelectorAll('img');
     const urls = [];
@@ -273,7 +273,7 @@ async function extract(browser, page, tiktokUrl) {
 
   // 3. SKU
   const skuVariants = await page.evaluate(() => {
-    const container = document.querySelector('[class*="flex-row"][class*="flex-wrap"]');
+    const container = document.querySelector('[class*="overflow-x-auto"][class*="flex-wrap"]');
     if (!container) return [];
     return [...container.children].map((child, idx) => {
       const text = child.innerText ? child.innerText.split('\n')[0].trim() : '';
@@ -291,7 +291,7 @@ async function extract(browser, page, tiktokUrl) {
   const skuDetails = [];
   for (let i = 0; i < skuVariants.length; i++) {
     await page.evaluate((idx) => {
-      const container = document.querySelector('[class*="flex-row"][class*="flex-wrap"]');
+      const container = document.querySelector('[class*="overflow-x-auto"][class*="flex-wrap"]');
       if (!container) return;
       const children = [...container.children];
       if (children[idx]) children[idx].click();
@@ -383,20 +383,27 @@ async function extract(browser, page, tiktokUrl) {
 
   const descResult = await page.evaluate(() => {
     const result = { text: '', images: [] };
-    const divs = document.querySelectorAll('div');
-    for (const div of divs) {
-      const cn = div.className || '';
-      if (cn.includes('overflow-hidden') && cn.includes('transition-all')) {
-        result.text = div.innerText || '';
-        const imgs = div.querySelectorAll('img');
-        for (const img of imgs) {
-          if (img.naturalWidth < 50) continue;
-          const src = img.currentSrc || img.src;
-          if (src && !src.includes('favicon') && !src.includes('logo') && !src.includes('tts_logo') && src.includes('ttcdn')) {
-            result.images.push(src);
-          }
+    // 优先用师父给的选择器：div.flex.flex-col.mt-40.w-full
+    let targetDiv = document.querySelector('[class*="flex-col"][class*="mt-40"][class*="w-full"]');
+    if (!targetDiv) {
+      // 备用：用旧逻辑找
+      const divs = document.querySelectorAll('div');
+      for (const div of divs) {
+        const cn = div.className || '';
+        if (cn.includes('overflow-hidden') && cn.includes('transition-all')) {
+          targetDiv = div; break;
         }
-        break;
+      }
+    }
+    if (targetDiv) {
+      result.text = targetDiv.innerText || '';
+      const imgs = targetDiv.querySelectorAll('img');
+      for (const img of imgs) {
+        if (img.naturalWidth < 50) continue;
+        const src = img.currentSrc || img.src;
+        if (src && !src.includes('favicon') && !src.includes('logo') && !src.includes('tts_logo') && src.includes('ttcdn')) {
+          result.images.push(src);
+        }
       }
     }
     return result;
