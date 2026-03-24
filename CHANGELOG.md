@@ -11,6 +11,16 @@
 - 修复：点击"上传 Shopify 格式的 CSV 文件"文字选择CSV模式（原选择器不稳定）
 - 清理：新建 Tab 前关闭已有 Tab，按 `isNew` 策略清理
 
+### 修复：to-csv.js CSV 格式按官方模板修正
+
+**修复内容：**
+- 去掉 BOM 输出（避免列名错位）
+- 加第58列（末尾空列，与官方58列对齐）
+- 主产品行：Option1/2 name 填值，Option1/2 value 为空
+- 变体行：Option1/2 name 为空，Option1/2 value 填具体值
+- Linked To 字段：全部留空
+- Color metafield 字段：留空
+
 ## v0.2.4 (2026-03-24)
 
 ### 修复：Publisher/Collector 多处 CDP 资源泄漏和清理逻辑

@@ -35,7 +35,7 @@ function findStore(query) {
 }
 
 // ============================================================
-// CSV 列定义（按 Shopify CSV 模板顺序，共57列）
+// CSV 列定义（按 Shopify CSV 模板顺序，共58列）
 // ============================================================
 const CSV_HEADERS = [
   'Title',                     // 0
@@ -95,6 +95,7 @@ const CSV_HEADERS = [
   'Google Shopping / Custom label 2',           // 54
   'Google Shopping / Custom label 3',           // 55
   'Google Shopping / Custom label 4',           // 56
+  '',                                          // 57: 末尾空列
 ]
 
 // ============================================================
@@ -146,57 +147,64 @@ function parseSkuName(name) {
 
 // ============================================================
 // 生成单行 CSV
+//
+// 规则（按官方模板）：
+// - 主产品行（isFirstRow=true）：Option1/2 name 填，Option1/2 value 为空
+// - 变体行（isFirstRow=false）：Option1/2 name 为空，Option1/2 value 填具体值
+// - Linked To 字段：全部留空
+// - Color metafield：留空
 // ============================================================
 function generateRow(product, sku, mainImageUrl, variantImageUrl, isFirstRow) {
   const skus = product._meta?.skus || []
+  const hasMultipleSkus = skus.length > 1
   
   // 主产品数据（只在第一行填）
   const title       = isFirstRow ? (product.title || '') : ''
-  const handle      = isFirstRow ? toHandle(product.title) : ''
+  const handle     = isFirstRow ? toHandle(product.title) : ''
   const description = isFirstRow ? (product.description || '') : ''
-  const vendor      = isFirstRow ? '' : ''  // 留空或填店铺名
-  const tags        = isFirstRow ? '' : ''
-  const status      = 'Active'
-  const published   = isFirstRow ? 'TRUE' : ''
+  const vendor     = isFirstRow ? '' : ''
+  const tags       = isFirstRow ? '' : ''
+  const status     = 'Active'
+  const published  = isFirstRow ? 'TRUE' : ''
   
   // SKU 数据：没有则自动生成
   let skuVal = sku?.sku || ''
   if (!skuVal && sku?.name) {
-    // 从 name 生成 SKU: "Noise-reduced upgraded version iPhone" → "NR-iPhone"
     const parsed = parseSkuName(sku.name)
     const opt1short = (parsed.opt1 || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
     const opt2short = (parsed.opt2 || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8)
     skuVal = `${opt1short}-${opt2short}`.toUpperCase()
   }
-  const price    = sku?.price || (isFirstRow ? '' : '')
+  const price     = sku?.price || ''
   const compareAt = sku?.compareAtPrice || ''
   
-  // 提取选项
+  // 选项
+  // 主产品行：填 Option name，Option value 为空
+  // 变体行：Option name 为空，填 Option value
   let opt1Name = '', opt1Val = '', opt2Name = '', opt2Val = ''
-  if (skus.length > 1) {
+  let opt1Linked = '', opt2Linked = ''
+  
+  if (hasMultipleSkus) {
     opt1Name = 'Color/Size'
     opt2Name = 'Port'
-    if (sku) {
+    // Linked To 固定为空
+    opt1Linked = ''
+    opt2Linked = ''
+    
+    if (isFirstRow) {
+      // 主产品行：Option value 为空
+      opt1Val = ''
+      opt2Val = ''
+    } else if (sku) {
+      // 变体行：Option name 为空，填具体值
+      opt1Name = ''
+      opt2Name = ''
       const parsed = parseSkuName(sku.name)
       opt1Val = parsed.opt1
       opt2Val = parsed.opt2
-    } else if (isFirstRow) {
-      // 第一行：选项值用逗号分隔所有选项
-      const opt1Set = new Set()
-      const opt2Set = new Set()
-      skus.forEach(s => {
-        const p = parseSkuName(s.name)
-        if (p.opt1) opt1Set.add(p.opt1)
-        if (p.opt2) opt2Set.add(p.opt2)
-      })
-      opt1Val = [...opt1Set].join(', ')
-      opt2Val = [...opt2Set].join(', ')
     }
-  } else if (sku) {
-    // 单个 SKU 不用选项
-    opt1Name = ''
-    opt1Val = ''
   }
+  // 单个 SKU：全部留空（不需要选项）
   
   // 图片
   const imageUrl   = isFirstRow ? (mainImageUrl || '') : ''
@@ -204,25 +212,25 @@ function generateRow(product, sku, mainImageUrl, variantImageUrl, isFirstRow) {
   const imageAlt   = isFirstRow ? (product.title || '') : ''
   const variantImg = !isFirstRow ? (variantImageUrl || '') : ''
   
-  // 其他字段
-  const weight     = ''
-  const weightUnit = 'g'
-  const requiresShip = 'TRUE'
-  const fulfillSvc  = 'manual'
-  const giftCard    = 'FALSE'
-  const chargeTax  = 'TRUE'
+  // 其他字段（按官方模板）
+  const weight         = ''
+  const weightUnit     = 'g'
+  const requiresShip   = 'TRUE'
+  const fulfillSvc    = 'manual'
+  const giftCard      = 'FALSE'
+  const chargeTax      = 'TRUE'
   const inventoryTracker = 'shopify'
-  const inventoryQty = '100'
+  const inventoryQty   = '100'
   const continueSelling = 'DENY'
   const unitPriceTotal = ''
   const unitPriceTotalUnit = ''
   const unitPriceBase = ''
   const unitPriceBaseUnit = ''
-  const colorMetafield = ''
+  const colorMetafield = ''  // 固定为空
   const googleCategory = ''
-  const googleGender = ''
-  const googleAge = ''
-  const googleMPN = ''
+  const googleGender  = ''
+  const googleAge     = ''
+  const googleMPN     = ''
   const googleAdGroup = ''
   const googleAdsLabels = ''
   const googleCondition = ''
@@ -234,17 +242,20 @@ function generateRow(product, sku, mainImageUrl, variantImageUrl, isFirstRow) {
   const googleLabel4 = ''
   
   const row = [
-    title, handle, description, vendor, '', '', tags, published, status,
-    skuVal, '', opt1Name, opt1Val, '', opt2Name, opt2Val, '',
-    '', '', '', // Option3 name/value/linked (cols 17-19)
-    price, compareAt, '', chargeTax, '',
-    unitPriceTotal, unitPriceTotalUnit, unitPriceBase, unitPriceBaseUnit,
-    inventoryTracker, inventoryQty, continueSelling,
-    weight, weightUnit, requiresShip, fulfillSvc,
-    imageUrl, imagePos, imageAlt, variantImg, giftCard, '', '',
-    colorMetafield, googleCategory, googleGender, googleAge, googleMPN,
-    googleAdGroup, googleAdsLabels, googleCondition, googleCustomProduct,
-    googleLabel0, googleLabel1, googleLabel2, googleLabel3, googleLabel4,
+    title, handle, description, vendor, '', '', tags, published, status,  // 0-8
+    skuVal, '',                                                         // 9-10
+    opt1Name, opt1Val, opt1Linked,                                     // 11-13
+    opt2Name, opt2Val, opt2Linked,                                     // 14-16
+    '', '', '',                                                         // 17-19: Option3
+    price, compareAt, '', chargeTax, '',                                // 20-24
+    unitPriceTotal, unitPriceTotalUnit, unitPriceBase, unitPriceBaseUnit, // 25-28
+    inventoryTracker, inventoryQty, continueSelling,                      // 29-31
+    weight, weightUnit, requiresShip, fulfillSvc,                       // 32-35
+    imageUrl, imagePos, imageAlt, variantImg, giftCard, '', '',         // 36-42
+    colorMetafield, googleCategory, googleGender, googleAge, googleMPN,  // 43-47
+    googleAdGroup, googleAdsLabels, googleCondition, googleCustomProduct, // 48-51
+    googleLabel0, googleLabel1, googleLabel2, googleLabel3, googleLabel4, // 52-56
+    '',                                                                 // 57: 末尾空列
   ]
   
   return row.map(escapeCSV).join(',')
@@ -344,7 +355,7 @@ log(`   店铺: ${store.name}`)
 const csv = generateCSV(product, imagesDir)
 
 const csvPath = path.join(TK_OUTPUT_DIR, folder, 'product.csv')
-fs.writeFileSync(csvPath, '\ufeff' + csv, 'utf8')  // BOM for Excel 兼容
+fs.writeFileSync(csvPath, csv, 'utf8')
 
 log(`✅ CSV 已生成: ${csvPath}`)
 log(`   大小: ${(Buffer.byteLength(csv, 'utf8') / 1024).toFixed(1)} KB`)
