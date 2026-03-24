@@ -3,7 +3,6 @@
  * TikTok Shop 采集子代理 - 运行器
  * 
  * 用法：
- *   node runner.js '{"tiktokUrl": "https://shop.tiktok.com/..."}'
  *   TK_TIKTOK_URL="..." node runner.js
  * 
  * 流程：
