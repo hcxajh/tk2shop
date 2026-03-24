@@ -19,9 +19,14 @@
 - 可成功导入为 **1 个商品 + 多个变体**
 - 当前 `/034` 样例已成功导入为 **1 个商品 + 12 个变体**
 - 当前 `/035` 样例已成功导入为 **1 个商品 + 1 个 SKU**
+- 当前 `/036` 样例已成功导入为 **1 个商品 + 4 个变体**
+- `/036` 同时验证了：
+  - 变体价格不一致
+  - 部分变体存在划线价，部分为空
 - 说明当前正式链路已同时覆盖：
   - 单 SKU 商品
-  - 多变体商品
+  - 单维多变体商品
+  - 价格不一致 / 部分变体无划线价的多变体商品
 - Shopify 预览页的“约 X 个产品”文案**不可靠**，应以导入后的商品详情页和产品列表为准
 
 ---
@@ -172,6 +177,9 @@ IMGBB_API_KEY=你的密钥 node scripts/publisher/import-csv-onestop.js 2026-03-
 说明：
 - 如果 `product.csv` 已经是外链图片，就算不传 `IMGBB_API_KEY` 也能直接导入
 - 只有当 CSV 里仍含本地图片路径、脚本需要代上传时，才强依赖 `IMGBB_API_KEY`
+- `config/stores.json` 中建议为每个店铺显式配置 `shopifySlug`
+- `import-csv-onestop.js` 会优先进入：`https://admin.shopify.com/store/${shopifySlug}/products`
+- 不再依赖 `admin.shopify.com/products` 的自动跳转，以避免误入其他已登录店铺后台
 - `import-csv-onestop.js` 会：
   1. 读取 `product.csv`
   2. 必要时上传本地图片并生成 `product-imgbb.csv`

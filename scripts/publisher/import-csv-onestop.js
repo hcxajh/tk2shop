@@ -57,7 +57,8 @@ if (!productDir) throw new Error('用法: node import-csv-onestop.js <商品目�
 
 const store = findStore(storeQuery);
 const PROFILE_NO = String(store.profileNo);
-// URL 直接用 https://admin.shopify.com（Shopify 自动跳转当前登录店铺）
+const SHOPIFY_SLUG = String(store.shopifySlug || store.storeId || store.name || '').trim();
+if (!SHOPIFY_SLUG) throw new Error('店铺缺少 shopifySlug/storeId/name，无法定位 Shopify 后台');
 
 // CSV 路径
 const CSV_ORIGINAL = path.join('/root/.openclaw/TKdown', productDir, 'product.csv');
@@ -283,7 +284,9 @@ async function importToShopify(csvPath) {
 
     // 1. 打开 Products 页面
     log(`🚀 打开 Shopify Products 页面...`);
-    await pg.goto(`https://admin.shopify.com/products`, {
+    const productsUrl = `https://admin.shopify.com/store/${SHOPIFY_SLUG}/products`;
+    log(`   目标店铺URL: ${productsUrl}`);
+    await pg.goto(productsUrl, {
       timeout: 40000,
       waitUntil: 'domcontentloaded'
     });

@@ -1,5 +1,16 @@
 # CHANGELOG - tk2shop
 
+## v0.3.12 (2026-03-24)
+
+### 修复：import-csv-onestop.js 显式进入目标 Shopify 店铺后台
+
+**修复内容：**
+- `stores.json` 新增 `shopifySlug` 字段，用于明确指定 Shopify 后台店铺路径
+- `import-csv-onestop.js` 改为优先读取 `store.shopifySlug`，并回退到 `storeId/name`
+- 导入前不再打开通用 `https://admin.shopify.com/products`
+- 改为显式进入：`https://admin.shopify.com/store/${slug}/products`
+- 修复已传 `--store vellin1122` 却实际跳到其他店铺（如 `a13xn8-v5`）的问题
+
 ## v0.3.11 (2026-03-24)
 
 ### 验证：正式链路补齐单 SKU 商品导入验证
