@@ -275,7 +275,7 @@ function generateCSV(product, imagesDir) {
     const files = fs.readdirSync(imagesDir).sort()
     for (const f of files) {
       if (!/\.(webp|png|jpg|jpeg|gif)$/i.test(f)) continue
-      const url = product._meta?.imageUrls?.[f] || `file://${path.join(imagesDir, f)}`
+      const url = product._meta?.imageUrls?.[f] || path.join(imagesDir, f)
       if (f.startsWith('desc_')) {
         descImages.push({ filename: f, url })
       } else {
