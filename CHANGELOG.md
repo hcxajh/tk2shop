@@ -2,15 +2,25 @@
 
 ## v0.2.4 (2026-03-24)
 
-### 修复：CDP 新建连接 vs 复用连接的处理逻辑
+### 修复：Publisher/Collector 多处 CDP 资源泄漏和清理逻辑
 
-**问题：** 复用已有浏览器时也关闭了浏览器，或者新建连接后没有关闭。
+**问题1：** Publisher `isProfileActive` 用 `JSON.parse()` 解析 `Browser active info: {...}` 导致解析失败，永远返回 false，每次都开新浏览器
+- 修复：改用 `out.includes('"status": "Active"')`
 
-**修复内容：**
-- `openBrowser()` 返回 `{ cdpUrl, isNew }` 区分是否新建连接
-- `isNew=true`：用完关闭浏览器（退出 CDP）
-- `isNew=false`：用完只断开 CDP，浏览器保持运行
-- 始终先关闭新建的 Tab 再清理连接
+**问题2：** Publisher `openBrowser` 成功后 `chromium.connectOverCDP` 失败时，catch 调用 `process.exit(1)` 导致 finally 不执行，AdsPower 浏览器泄漏
+- 修复：移除 `process.exit(1)`，让异常传播到 finally 统一清理
+
+**问题3：** Publisher/Collector finally 块未检查 `pg`/`browser`/`cdpResult`/`lockFile` 是否 undefined，在某些提前失败的路径下会 throw
+- 修复：添加 `if (pg)`、`if (browser)` 等守卫条件
+
+**问题4：** Collector 成功路径 `browser.disconnect()` 没 `.catch()` 保护，throws 时被 `main().catch()` 捕获导致 exit(1)
+- 修复：用 try-catch 包裹清理代码
+
+**问题5：** Publisher 新建 Tab 前没关闭已有 Tab，可能遗留干扰页面
+- 修复：与 collector 一致，先关多余 Tab 再建新的
+
+**问题6：** `existingPageCount` 变量声明后未使用
+- 修复：删除
 
 ## v0.2.3 (2026-03-24)
 

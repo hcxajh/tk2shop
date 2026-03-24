@@ -90,8 +90,8 @@ function isProfileActive(profileNo) {
       `npx --yes adspower-browser get-browser-active '{"profileNo":"${profileNo}"}' 2>/dev/null`,
       {encoding:'utf8', timeout:15000}
     );
-    const data = JSON.parse(out);
-    return data && data.status === 0;
+    // 输出格式: "Browser active info: {\n  "status": "Active"\n}"
+    return out.includes('"status": "Active"');
   } catch (e) {
     return false;
   }
@@ -177,12 +177,18 @@ async function uploadProduct(folderPath, store) {
     browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
   } catch (e) {
     console.error(`❌ 打开浏览器失败: ${e.message}`);
-    releaseLock(lockFile);
-    process.exit(1);
+    // 让异常传播到 finally 清理（finally 会根据 cdpResult.isNew 决定是否关浏览器）
+    throw e;
   }
 
   const ctx = browser.contexts()[0];
-  const existingPageCount = ctx.pages().length;
+  // 先关闭所有已存在的 tabs，只保留新创建的一个
+  const existingPages = ctx.pages();
+  if (existingPages.length > 1) {
+    for (const p of existingPages) {
+      if (!p.isClosed()) await p.close().catch(() => {});
+    }
+  }
   const pg = await ctx.newPage();  // 新建Tab
 
   try {
@@ -396,25 +402,28 @@ async function uploadProduct(folderPath, store) {
     console.error(`❌ 错误: ${e.message}`);
     await pg.screenshot({path: `/root/.openclaw/workspace_shop/error-${Date.now()}.png`}).catch(()=>{});
   } finally {
-    // 关闭我们新建的Tab
-    try {
-      await pg.close();
-      log('🔚 已关闭新建的Tab');
-    } catch (e) {}
-
-    // 根据是否新建CDP连接来决定关闭策略
-    if (cdpResult && cdpResult.isNew) {
-      // 新建的 → 关浏览器
-      log('🔓 关闭浏览器 (新建CDP连接)');
-      await browser.close().catch(() => {});
-      closeBrowser(store.profileNo);
-    } else {
-      // 复用的 → 只断开CDP，浏览器保持运行
-      log('🔗 断开CDP连接 (复用已有浏览器)');
-      await browser.disconnect().catch(() => {});
+    // 关闭新建的Tab（pg可能未定义）
+    if (pg) {
+      try { await pg.close(); log('🔚 已关闭新建的Tab'); } catch (e) {}
     }
-    releaseLock(lockFile);
-    log(`🔓 已释放 profile ${store.profileNo} 锁`);
+
+    // 根据是否新建CDP连接来决定关闭策略（browser/cdpResult可能未定义）
+    if (cdpResult && cdpResult.isNew) {
+      if (browser) {
+        log('🔓 关闭浏览器 (新建CDP连接)');
+        try { await browser.close(); } catch (e) {}
+      }
+      closeBrowser(store.profileNo);
+    } else if (browser) {
+      log('🔗 断开CDP连接 (复用已有浏览器)');
+      try { await browser.disconnect(); } catch (e) {}
+    }
+
+    // 释放锁（lockFile可能未定义）
+    if (lockFile) {
+      releaseLock(lockFile);
+      log(`🔓 已释放 profile ${store.profileNo} 锁`);
+    }
   }
 }
 

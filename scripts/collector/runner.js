@@ -529,20 +529,22 @@ async function main() {
     };
     fs.writeFileSync(path.join(outDir, 'product.json'), JSON.stringify(product, null, 2));
 
-    // 6. 关闭新建的Tab
-    await pg.close().catch(() => {});
-
-    // 7. 根据是否新建CDP连接来决定关闭策略
-    if (cdpResult && cdpResult.isNew) {
-      log('🔓 关闭浏览器 (新建CDP连接)');
-      await browser.close().catch(() => {});
-      closeBrowser(profileNo);
-    } else {
-      log('🔗 断开CDP连接 (复用已有浏览器)');
-      await browser.disconnect().catch(() => {});
+    // 6. 关闭新建的Tab和CDP连接（统一在 finally 风格的 try-catch 中）
+    try {
+      if (pg && !pg.isClosed()) await pg.close().catch(() => {});
+      if (cdpResult && cdpResult.isNew) {
+        log('🔓 关闭浏览器 (新建CDP连接)');
+        await browser.close().catch(() => {});
+        closeBrowser(profileNo);
+      } else if (browser) {
+        log('🔗 断开CDP连接 (复用已有浏览器)');
+        await browser.disconnect().catch(() => {});
+      }
+    } catch (e) {
+      log(`⚠️ 清理时出错: ${e.message}`);
     }
 
-    // 8. 输出结果
+    // 7. 输出结果
     const result = {
       success: true,
       outputDir: outDir,
