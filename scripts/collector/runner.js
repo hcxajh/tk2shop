@@ -130,20 +130,46 @@ function findAvailableProfile() {
   return PROFILE_POOL[0];
 }
 
+/**
+ * 打开或连接浏览器
+ * @returns {{ cdpUrl: string, isNew: boolean }}
+ *   - isNew=true: 本次新建的CDP连接，需要用完关闭浏览器
+ *   - isNew=false: 复用的已有连接，用完只断开CDP不断浏览器
+ */
 function openBrowser(profileNo) {
+  // 先检查是否已有浏览器运行
+  if (isProfileActive(profileNo)) {
+    log(`🔁 检测到 profile ${profileNo} 已有浏览器运行，尝试连接...`);
+    try {
+      const out = execSync(
+        `npx --yes adspower-browser list 2>/dev/null`,
+        { encoding: 'utf8', timeout: 15000 }
+      );
+      const data = JSON.parse(out);
+      const browser = (data.data || []).find(b => b.user_id === String(profileNo));
+      if (browser && browser.webdriver && browser.webdriver.startsWith('ws')) {
+        log(`🔌 复用已有 CDP: ${browser.webdriver}`);
+        return { cdpUrl: browser.webdriver, isNew: false };
+      }
+    } catch (e) {
+      log(`   列表查询失败，将重新打开: ${e.message}`);
+    }
+    throw new Error(`profile ${profileNo} 已有浏览器运行但无法连接`);
+  }
+
   log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
-  // 构造正确的 JSON: {"profileNo": "1896325"}
   const jsonArg = `{"profileNo":"${profileNo}"}`;
   const out = execSync(
     `npx --yes adspower-browser open-browser '${jsonArg}' 2>&1`,
     { encoding: 'utf8', timeout: 60000 }
   );
   log('   ' + out.trim().split('\n').slice(-2).join(' '));
-  
+
   // 解析CDP URL
   const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
   if (!match) throw new Error('无法获取 CDP URL: ' + out);
-  return match[1];
+  log(`🔌 CDP: ${match[1]} (新建连接)`);
+  return { cdpUrl: match[1], isNew: true };
 }
 
 function closeBrowser(profileNo) {
@@ -188,11 +214,7 @@ function getNextSeq(dateDir) {
 // ============================================================
 // 采集主流程
 // ============================================================
-async function extract(cdpUrl, tiktokUrl) {
-  const browser = await chromium.connectOverCDP(cdpUrl);
-  const ctx = browser.contexts()[0];
-  const page = ctx.pages()[0] || await ctx.newPage();
-
+async function extract(browser, page, tiktokUrl) {
   log(`🌐 导航到: ${tiktokUrl}`);
   await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForTimeout(3000);
@@ -360,7 +382,6 @@ async function extract(cdpUrl, tiktokUrl) {
   log(`📝 描述文字: ${descResult.text.length} 字符`);
   log(`📝 描述图片: ${descResult.images.length} 张`);
 
-  await browser.close();
   return { title, mainImages, skuDetails, descResult };
 }
 
@@ -393,21 +414,35 @@ async function main() {
     : findAvailableProfile();
   log(`🖥️  使用配置文件: ${profileNo}`);
 
-  let cdpUrl = '';
+  let cdpResult = null;
   let lockFile = '';
+  let browser = null;
   try {
     // 获取文件锁，防止多进程抢同一 profile
     lockFile = acquireLock(profileNo);
     log(`🔒 锁定 profile ${profileNo}`);
 
     // 2. 打开浏览器
-    cdpUrl = openBrowser(profileNo);
-    log(`🔌 CDP: ${cdpUrl}`);
+    cdpResult = openBrowser(profileNo);
+    log(`🔌 CDP: ${cdpResult.cdpUrl}`);
 
-    // 3. 执行采集
-    const data = await extract(cdpUrl, tiktokUrl);
+    // 3. 连接CDP
+    browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
+    const ctx = browser.contexts()[0];
 
-    // 4. 创建输出目录
+    // 先关闭所有已存在的 tabs，只保留新创建的一个
+    const existingPages = ctx.pages();
+    if (existingPages.length > 1) {
+      for (const p of existingPages) {
+        if (!p.isClosed()) await p.close().catch(() => {});
+      }
+    }
+    const pg = await ctx.newPage();  // 新建Tab
+
+    // 4. 执行采集
+    const data = await extract(browser, pg, tiktokUrl);
+
+    // 5. 创建输出目录
     const today = new Date().toISOString().split('T')[0];
     const productId = tiktokUrl.match(/\/(\d+)(?:\?.*)?$/)
       ? tiktokUrl.match(/\/(\d+)(?:\?.*)?$/)[1]
@@ -494,10 +529,20 @@ async function main() {
     };
     fs.writeFileSync(path.join(outDir, 'product.json'), JSON.stringify(product, null, 2));
 
-    // 9. 关闭浏览器
-    closeBrowser(profileNo);
+    // 6. 关闭新建的Tab
+    await pg.close().catch(() => {});
 
-    // 10. 输出结果
+    // 7. 根据是否新建CDP连接来决定关闭策略
+    if (cdpResult && cdpResult.isNew) {
+      log('🔓 关闭浏览器 (新建CDP连接)');
+      await browser.close().catch(() => {});
+      closeBrowser(profileNo);
+    } else {
+      log('🔗 断开CDP连接 (复用已有浏览器)');
+      await browser.disconnect().catch(() => {});
+    }
+
+    // 8. 输出结果
     const result = {
       success: true,
       outputDir: outDir,
@@ -516,7 +561,16 @@ async function main() {
 
   } catch (err) {
     log(`❌ 错误: ${err.message}`);
-    try { closeBrowser(profileNo); } catch (e) {}
+    // 错误时也按 isNew 策略清理
+    if (pg && !pg.isClosed()) await pg.close().catch(() => {});
+    if (browser) {
+      if (cdpResult && cdpResult.isNew) {
+        await browser.close().catch(() => {});
+        closeBrowser(profileNo);
+      } else {
+        await browser.disconnect().catch(() => {});
+      }
+    }
     releaseLock(lockFile);
     process.exit(1);
   }
