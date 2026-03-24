@@ -60,49 +60,6 @@ function log(msg) {
   console.log(`[${new Date().toISOString().slice(11,19)}] ${msg}`);
 }
 
-// 文件锁：确保同一时刻只有一个进程使用某个 profile
-const LOCK_DIR = '/tmp/tk2shop-locks';
-function acquireLock(profileNo) {
-  fs.mkdirSync(LOCK_DIR, { recursive: true });
-  const lockFile = path.join(LOCK_DIR, `profile-${profileNo}.lock`);
-  const maxWait = 60000;
-  const start = Date.now();
-  while (Date.now() - start < maxWait) {
-    try {
-      fs.writeFileSync(lockFile, String(process.pid), { flag: 'wx' });
-      return lockFile;
-    } catch (e) {
-      if (e.code === 'EEXIST') {
-        // 锁被占用，检查持有者进程是否还活着
-        let holderPid = null;
-        try {
-          holderPid = parseInt(fs.readFileSync(lockFile, 'utf8').trim(), 10);
-        } catch (readErr) {
-          // 读不到锁文件，说明刚被删了，重试
-          continue;
-        }
-        try {
-          process.kill(holderPid, 0);
-        } catch {
-          // 进程已死，删除旧锁重试
-          try { fs.unlinkSync(lockFile); } catch {}
-          continue;
-        }
-        // 进程还活着，等2秒
-        const waitUntil = Date.now() + 2000;
-        while (Date.now() < waitUntil) {}
-        continue;
-      }
-      throw e;
-    }
-  }
-  throw new Error(`获取 profile ${profileNo} 锁超时`);
-}
-
-function releaseLock(lockFile) {
-  try { fs.unlinkSync(lockFile); } catch {}
-}
-
 function isProfileActive(profileNo) {
   try {
     const out = execSync(
@@ -224,6 +181,92 @@ function getNextSeq(dateDir) {
   return entries.length > 0 ? Math.max(...entries) + 1 : 1;
 }
 
+function hasMeaningfulProductData(data) {
+  return !!(
+    (data.title && data.title.trim()) ||
+    (data.mainImages && data.mainImages.length > 0) ||
+    (data.skuDetails && data.skuDetails.length > 0) ||
+    (data.descResult && ((data.descResult.text && data.descResult.text.trim()) || (data.descResult.images && data.descResult.images.length > 0)))
+  );
+}
+
+async function inspectPageState(page) {
+  return await page.evaluate(() => {
+    const text = (document.body?.innerText || '').trim();
+    const title = (document.title || '').trim();
+    const bodyHtml = document.body?.innerHTML || '';
+    const hasCaptcha = [
+      'Verify to continue',
+      'Drag the puzzle',
+      'captcha',
+      'Security check',
+      'Please verify',
+      'Slide to complete the puzzle',
+      'Maximum number of attempts reached'
+    ].some(k => text.includes(k) || bodyHtml.includes(k));
+    const productHints = [
+      'About this product',
+      'Product description',
+      'Sold by',
+      'Reviews',
+      'Description',
+      'Details'
+    ].filter(k => text.includes(k));
+    return {
+      url: location.href,
+      title,
+      bodyTextLen: text.length,
+      bodyTextStart: text.slice(0, 800),
+      hasCaptcha,
+      productHints,
+      hasOgTitle: !!document.querySelector('meta[property="og:title"]'),
+      ogTitle: document.querySelector('meta[property="og:title"]')?.content || '',
+      imageCount: document.images.length,
+      readyState: document.readyState
+    };
+  });
+}
+
+async function waitForPageRecovery(page, tiktokUrl, reason) {
+  log(`⚠️ ${reason}，等待页面恢复或人工处理（最多10分钟）...`);
+  for (let i = 0; i < 120; i++) {
+    try {
+      await page.waitForTimeout(5000);
+    } catch (e) {
+      log(`❌ 浏览器已关闭，采集中止`);
+      throw new Error('浏览器被关闭，采集中止');
+    }
+
+    let state;
+    try {
+      state = await inspectPageState(page);
+    } catch (e) {
+      log(`❌ 页面已关闭，采集中止`);
+      throw new Error('页面已关闭，采集中止');
+    }
+
+    const recovered = !state.hasCaptcha && (
+      state.hasOgTitle ||
+      state.productHints.length > 0 ||
+      state.imageCount >= 3 ||
+      state.bodyTextLen > 1000
+    );
+
+    if (recovered) {
+      log(`✅ 页面已恢复，重新加载页面...`);
+      await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      return;
+    }
+
+    if (i % 12 === 0) {
+      log(`⏳ 等待页面恢复... (${Math.floor((i + 1) * 5 / 60)}分钟)`);
+      log(`   当前页面: title=${state.title || '空'} text=${state.bodyTextLen} img=${state.imageCount} hints=${state.productHints.join(',') || '无'}`);
+    }
+  }
+  throw new Error(`等待页面恢复超时: ${reason}`);
+}
+
 // ============================================================
 // 采集主流程
 // ============================================================
@@ -232,42 +275,11 @@ async function extract(browser, page, tiktokUrl) {
   await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForTimeout(3000);
 
-  // 检测验证码
-  const captchaDetected = await page.evaluate(() => {
-    const text = document.body.innerText || '';
-    return text.includes('Verify to continue') || text.includes('Drag the puzzle') || text.includes('captcha');
-  });
-
-  if (captchaDetected) {
+  // 检测验证码/风控页
+  let pageState = await inspectPageState(page);
+  if (pageState.hasCaptcha) {
     log(`⚠️ 检测到验证码，请手动在浏览器中完成验证...`);
-    // 等待验证码解除（每5秒检查一次，最多等10分钟）
-    for (let i = 0; i < 120; i++) {
-      try {
-        await page.waitForTimeout(5000);
-      } catch (e) {
-        // 浏览器被关闭了
-        log(`❌ 浏览器已关闭，采集中止`);
-        throw new Error('浏览器被关闭，采集中止');
-      }
-      try {
-        const stillCaptcha = await page.evaluate(() => {
-          const text = document.body.innerText || '';
-          return text.includes('Verify to continue') || text.includes('Drag the puzzle') || text.includes('captcha');
-        });
-        if (!stillCaptcha) {
-          log(`✅ 验证码已解除，重新加载页面...`);
-          // 验证码解除后重新导航，确保页面干净
-          await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await page.waitForTimeout(3000);
-          break;
-        }
-        if (i % 12 === 0) log(`⏳ 等待验证码解除... (${Math.floor((i+1)*5/60)}分钟)`);
-      } catch (e) {
-        // 页面已关闭
-        log(`❌ 页面已关闭，采集中止`);
-        throw new Error('页面已关闭，采集中止');
-      }
-    }
+    await waitForPageRecovery(page, tiktokUrl, '检测到验证码或风控页');
   }
 
   await page.evaluate(() => { window.scrollTo(0, 0); });
@@ -441,7 +453,17 @@ async function extract(browser, page, tiktokUrl) {
   log(`📝 描述文字: ${descResult.text.length} 字符`);
   log(`📝 描述图片: ${descResult.images.length} 张`);
 
-  return { title, mainImages, skuDetails, descResult };
+  const data = { title, mainImages, skuDetails, descResult };
+  if (!hasMeaningfulProductData(data)) {
+    pageState = await inspectPageState(page);
+    if (pageState.hasCaptcha || pageState.bodyTextLen < 200 || pageState.productHints.length === 0) {
+      await waitForPageRecovery(page, tiktokUrl, '页面未加载出商品内容');
+      return await extract(browser, page, tiktokUrl);
+    }
+    throw new Error(`未采集到商品内容，当前页面异常: title=${pageState.title || '空'} text=${pageState.bodyTextLen} hints=${pageState.productHints.join(',') || '无'} snippet=${pageState.bodyTextStart.slice(0, 120)}`);
+  }
+
+  return data;
 }
 
 // ============================================================
@@ -476,14 +498,9 @@ async function main() {
   log(`🖥️  使用配置文件: ${profileNo}`);
 
   let cdpResult = null;
-  let lockFile = '';
   let browser = null;
   let pg = null;
   try {
-    // 获取文件锁，防止多进程抢同一 profile
-    lockFile = acquireLock(profileNo);
-    log(`🔒 锁定 profile ${profileNo}`);
-
     // 2. 打开浏览器
     cdpResult = openBrowser(profileNo);
     log(`🔌 CDP: ${cdpResult.cdpUrl}`);
@@ -492,12 +509,8 @@ async function main() {
     browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
     const ctx = browser.contexts()[0];
 
-    // 先新建 Tab，再关闭旧的（确保始终有 tab 存在，避免浏览器因 0 tab 关闭）
+    // 只新建本次任务的 Tab，不动已有 Tab
     pg = await ctx.newPage();
-    const existingPages = ctx.pages().filter(p => p !== pg);
-    for (const p of existingPages) {
-      if (!p.isClosed()) await p.close().catch(() => {});
-    }
 
     // 4. 执行采集
     const data = await extract(browser, pg, tiktokUrl);
@@ -572,6 +585,15 @@ async function main() {
       status: 'active',
       images: allImages,
       descriptionImages: descImages,
+      variants: data.skuDetails.map((s, idx) => ({
+        name: s.name,
+        sku: `TK-${productId}-${String(idx + 1).padStart(2, '0')}`,
+        price: s.price,
+        compareAtPrice: s.compareAtPrice,
+        image: s.thumbnailFile || '',
+        thumbnail: s.thumbnailFile || '',
+        detail: s.detail || ''
+      })),
       _meta: {
         productId,
         seq: seqStr,
@@ -625,15 +647,11 @@ async function main() {
       console.log('   收到信号，继续关闭...');
     }
 
-    // 10. 根据是否新建CDP连接来决定关闭策略
-    if (cdpResult && cdpResult.isNew) {
-      log('🔓 关闭浏览器 (新建CDP连接)');
+    // 10. 关闭本次浏览器，释放 AdsPower 占用
+    if (browser) {
       await browser.close().catch(() => {});
-      closeBrowser(profileNo);
-    } else {
-      log('🔗 断开CDP连接 (复用已有浏览器)');
-      await browser.disconnect().catch(() => {});
     }
+    closeBrowser(profileNo);
 
     // 11. 输出结果
     const result = {
@@ -649,22 +667,16 @@ async function main() {
       message: '采集完成'
     };
     console.log('\n' + JSON.stringify(result, null, 2));
-    releaseLock(lockFile);
     process.exit(0);
 
   } catch (err) {
     log(`❌ 错误: ${err.message}`);
-    // 错误时也按 isNew 策略清理
+    // 错误时也关闭本次新建的Tab和浏览器，释放 AdsPower 占用
     if (pg && !pg.isClosed()) await pg.close().catch(() => {});
     if (browser) {
-      if (cdpResult && cdpResult.isNew) {
-        await browser.close().catch(() => {});
-        closeBrowser(profileNo);
-      } else {
-        await browser.disconnect().catch(() => {});
-      }
+      await browser.close().catch(() => {});
     }
-    releaseLock(lockFile);
+    closeBrowser(profileNo);
     process.exit(1);
   }
 }
