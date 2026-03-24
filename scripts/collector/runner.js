@@ -131,33 +131,10 @@ function findAvailableProfile() {
 }
 
 /**
- * 打开或连接浏览器
+ * 打开AdsPower浏览器，获取Playwright CDP URL
  * @returns {{ cdpUrl: string, isNew: boolean }}
- *   - isNew=true: 本次新建的CDP连接，需要用完关闭浏览器
- *   - isNew=false: 复用的已有连接，用完只断开CDP不断浏览器
  */
 function openBrowser(profileNo) {
-  // 先检查是否已有浏览器运行
-  if (isProfileActive(profileNo)) {
-    log(`🔁 检测到 profile ${profileNo} 已有浏览器运行，尝试连接...`);
-    try {
-      const out = execSync(
-        `npx --yes adspower-browser list 2>/dev/null`,
-        { encoding: 'utf8', timeout: 15000 }
-      );
-      const data = JSON.parse(out);
-      const browser = (data.data || []).find(b => b.user_id === String(profileNo));
-      if (browser && browser.webdriver && browser.webdriver.startsWith('ws')) {
-        log(`🔌 复用已有 CDP: ${browser.webdriver}`);
-        return { cdpUrl: browser.webdriver, isNew: false };
-      }
-    } catch (e) {
-      log(`   列表查询失败，将重新打开: ${e.message}`);
-    }
-    // 复用失败，抛异常
-    throw new Error(`profile ${profileNo} 已有浏览器运行但无法连接`);
-  }
-
   log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
   const jsonArg = `{"profileNo":"${profileNo}"}`;
   const out = execSync(
@@ -169,7 +146,12 @@ function openBrowser(profileNo) {
   // 解析CDP URL
   const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
   if (!match) throw new Error('无法获取 CDP URL: ' + out);
-  log(`🔌 CDP: ${match[1]} (新建连接)`);
+  log(`🔌 CDP: ${match[1]}`);
+
+  // 等待Chrome完全启动（避免连接失败）
+  log(`   等待Chrome启动...`);
+  execSync(`sleep 3`, { encoding: 'utf8', timeout: 10000 });
+
   return { cdpUrl: match[1], isNew: true };
 }
 
@@ -574,11 +556,25 @@ async function main() {
     // 9. 关闭新建的Tab
     await pg.close().catch(() => {});
 
-    // 9b. 如果有 --hold，等用户确认后再关浏览器
+    // 9b. 如果有 --hold，写文件等待用户确认后再关浏览器
     if (hold) {
-      console.log('\n⏸️  采集完成，浏览器保持开着。验证完成后按回车继续关闭...');
-      const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
-      await new Promise(resolve => rl.question('', () => { rl.close(); resolve(); }));
+      const readyFile = `/tmp/tk2shop-hold-${process.pid}.ready`;
+      fs.writeFileSync(readyFile, 'ready');
+      console.log('\n⏸️  采集完成，浏览器保持开着。');
+      console.log(`   验证完成后运行以下命令继续关闭:`);
+      console.log(`   echo done > ${readyFile}`);
+      // 等待文件内容变成 "done"
+      while (true) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const content = fs.readFileSync(readyFile, 'utf8').trim();
+          if (content === 'done') {
+            fs.unlinkSync(readyFile);
+            break;
+          }
+        } catch (e) {}
+      }
+      console.log('   收到信号，继续关闭...');
     }
 
     // 10. 根据是否新建CDP连接来决定关闭策略

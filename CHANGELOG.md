@@ -15,7 +15,13 @@
 
 ### 新增：runner.js 支持 --hold 参数
 
-- 加 `{"tiktokUrl":"url","hold":true}` 参数后，采集完成不关浏览器，等用户按回车再关，便于手动验证采集结果
+- 加 `{"tiktokUrl":"url","hold":true}` 参数后，采集完成不关浏览器，写文件 `/tmp/tk2shop-hold-{pid}.ready`，用户执行 `echo done > /tmp/tk2shop-hold-{pid}.ready` 确认后继续关闭
+
+### 修复：runner.js CDP连接稳定性
+
+- 移除 `isProfileActive` 检测（返回的 debug_port 无法被 Playwright 使用）
+- `openBrowser` 直接调用 `open-browser`，获取正确的 CDP WebSocket URL
+- `open-browser` 后等待3秒再连接CDP（避免Chrome未完全启动导致连接失败）
 
 ### 修复：to-csv.js 图片路径格式
 
