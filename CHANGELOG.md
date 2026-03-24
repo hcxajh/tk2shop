@@ -13,7 +13,10 @@
 - 清理：新建 Tab 前关闭已有 Tab，按 `isNew` 策略清理
 - `stores.json` 更新：添加 vellin1122 店铺配置（profileNo: 1896325）
 
-### 新增：runner.js 支持 --hold 参数
+### 改进：runner.js hold 模式支持检测浏览器关闭
+
+- 等待循环同时检测文件信号和浏览器窗口状态
+- 浏览器被外部关闭时自动退出等待，避免脚本卡死
 
 - 加 `{"tiktokUrl":"url","hold":true}` 参数后，采集完成不关浏览器，写文件 `/tmp/tk2shop-hold-{pid}.ready`，用户执行 `echo done > /tmp/tk2shop-hold-{pid}.ready` 确认后继续关闭
 

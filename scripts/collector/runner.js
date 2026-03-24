@@ -570,16 +570,28 @@ async function main() {
       console.log('\n⏸️  采集完成，浏览器保持开着。');
       console.log(`   验证完成后运行以下命令继续关闭:`);
       console.log(`   echo done > ${readyFile}`);
-      // 等待文件内容变成 "done"
+      // 等待文件内容变成 "done"，或浏览器被外部关闭
       while (true) {
         await new Promise(r => setTimeout(r, 1000));
         try {
+          // 检测文件信号
           const content = fs.readFileSync(readyFile, 'utf8').trim();
           if (content === 'done') {
             fs.unlinkSync(readyFile);
+            console.log('   收到 done 信号，退出等待');
             break;
           }
-        } catch (e) {}
+          // 检测浏览器窗口是否还存在
+          const pages = await ctx.pages();
+          if (pages.length === 0) {
+            console.log('   检测到浏览器窗口已关闭，自动退出等待');
+            break;
+          }
+        } catch (e) {
+          // 文件被删或CDP断开，自动退出
+          console.log('   检测到异常，自动退出等待');
+          break;
+        }
       }
       console.log('   收到信号，继续关闭...');
     }
