@@ -3,23 +3,65 @@
  * Shopify CSV 批量导入脚本（一体化版本）
  * 1. 读取 CSV，将本地图片上传到 imgbb
  * 2. 通过 AdsPower 浏览器自动完成 Shopify 导入
+ *
+ * 用法：
+ *   node import-csv-onestop.js <商品目录> --store <店铺ID>
+ *   node import-csv-onestop.js 2026-03-23/023 --store vellin1122
+ *
+ * 配置：config/stores.json
  */
 const { chromium } = require('playwright');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
 
-const PROFILE_NO = '1896325';
-const SHOP = 'vellin1122';
+// ==================== 配置加载 ====================
+const CONFIG_DIR = path.join(__dirname, '..', '..', 'config');
+const STORES_FILE = path.join(CONFIG_DIR, 'stores.json');
 const IMGBB_API_KEY = '45a4978299f821f5743e361bc1f3472a';
-
-const CSV_DIR = '/root/.openclaw/TKdown/2026-03-23/023';
-const CSV_ORIGINAL = path.join(CSV_DIR, 'product.csv');
-const CSV_OUTPUT = path.join(CSV_DIR, 'product-imgbb.csv');
 const IMGBB_API_URL = 'https://api.imgbb.com/1/upload';
 
 function log(msg) { console.log(`[${new Date().toISOString().slice(11,19)}] ${msg}`); }
+
+function loadStores() {
+  try {
+    const data = JSON.parse(fs.readFileSync(STORES_FILE, 'utf8'));
+    return data.stores || [];
+  } catch (e) {
+    log(`❌ 读取 stores.json 失败: ${e.message}`);
+    return [];
+  }
+}
+
+function findStore(query) {
+  const stores = loadStores();
+  if (!query) {
+    if (stores.length === 1) return stores[0];
+    throw new Error(`未指定店铺，且 stores.json 中有 ${stores.length} 个店铺，请用 --store <ID> 指定`);
+  }
+  const store = stores.find(s => s.storeId === query || s.name === query);
+  if (!store) throw new Error(`未找到店铺: ${query}，可用: ${stores.map(s => s.storeId).join(', ')}`);
+  return store;
+}
+
+// CLI 参数解析
+const args = process.argv.slice(2);
+let productDir = '';
+let storeQuery = '';
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--store' && args[i + 1]) storeQuery = args[++i];
+  else if (args[i].startsWith('/') || args[i].includes('/')) productDir = args[i];
+}
+if (!productDir) throw new Error('用法: node import-csv-onestop.js <商品目录> --store <店铺ID>');
+
+const store = findStore(storeQuery);
+const PROFILE_NO = String(store.profileNo);
+const SHOP = store.shopifySlug;
+
+// CSV 路径
+const CSV_ORIGINAL = path.join('/root/.openclaw/TKdown', productDir, 'product.csv');
+const CSV_OUTPUT = path.join('/root/.openclaw/TKdown', productDir, 'product-imgbb.csv');
 
 // ==================== imgbb 上传 ====================
 function uploadToImgbb(filePath) {
@@ -57,7 +99,7 @@ function uploadToImgbb(filePath) {
   });
 }
 
-// 解析 CSV
+// ==================== CSV 解析 ====================
 function parseCSV(content) {
   const lines = content.trim().split('\n');
   const headers = parseCSVLine(lines[0]);
@@ -103,122 +145,93 @@ function toCSVLine(fields) {
   }).join(',');
 }
 
-async function processCSV() {
-  log(`📋 读取 CSV: ${CSV_ORIGINAL}`);
-  const content = fs.readFileSync(CSV_ORIGINAL, 'utf8');
-  const { headers, rows } = parseCSV(content);
-  log(`   商品数量: ${rows.length}`);
-
-  const imageCol = 'Product image URL';
-  const variantImageCol = 'Variant image URL';
-
-  // 收集图片
-  log(`🖼️  收集本地图片...`);
-  const toUpload = new Map();
-  for (const row of rows) {
-    for (const col of [imageCol, variantImageCol]) {
-      const val = row[col];
-      if (val && val.startsWith('./')) {
-        const localPath = path.join(CSV_DIR, val.replace(/^\.\//, ''));
-        if (fs.existsSync(localPath) && !toUpload.has(localPath)) {
-          toUpload.set(localPath, null);
-        }
-      }
-    }
+// ==================== CDP 浏览器管理（与 upload-product.js 一致） ====================
+function isProfileActive(profileNo) {
+  try {
+    const out = execSync(
+      `npx --yes adspower-browser get-browser-active '{"profileNo":"${profileNo}"}' 2>/dev/null`,
+      {encoding:'utf8', timeout:15000}
+    );
+    return out.includes('"status": "Active"');
+  } catch (e) {
+    return false;
   }
-  if (toUpload.size === 0) {
-    log(`   无本地图片需要上传`);
-    return { headers, rows, uploaded: new Map() };
-  }
-  log(`   共 ${toUpload.size} 张图片`);
+}
 
-  // 上传
-  log(`☁️  上传到 imgbb...`);
-  let idx = 0;
-  for (const [localPath] of toUpload) {
-    idx++;
+/**
+ * 打开或连接浏览器
+ * @returns {{ cdpUrl: string, isNew: boolean }}
+ */
+function openBrowser(profileNo) {
+  if (isProfileActive(profileNo)) {
+    log(`🔁 检测到 profile ${profileNo} 已有浏览器运行，尝试连接...`);
     try {
-      const url = await uploadToImgbb(localPath);
-      toUpload.set(localPath, url);
-      log(`   [${idx}/${toUpload.size}] ✅ ${path.basename(localPath)}`);
-    } catch (e) {
-      log(`   [${idx}/${toUpload.size}] ❌ ${path.basename(localPath)}: ${e.message}`);
-    }
-  }
-
-  // 替换
-  log(`✏️  替换 CSV 图片路径...`);
-  for (const row of rows) {
-    for (const col of [imageCol, variantImageCol]) {
-      const val = row[col];
-      if (val && val.startsWith('./')) {
-        const localPath = path.join(CSV_DIR, val.replace(/^\.\//, ''));
-        const newUrl = toUpload.get(localPath);
-        if (newUrl) {
-          row[col] = newUrl;
-        }
+      const out = execSync(
+        `npx --yes adspower-browser list 2>/dev/null`,
+        { encoding: 'utf8', timeout: 15000 }
+      );
+      const data = JSON.parse(out);
+      const browser = (data.data || []).find(b => b.user_id === String(profileNo));
+      if (browser && browser.webdriver && browser.webdriver.startsWith('ws')) {
+        log(`🔌 复用已有 CDP: ${browser.webdriver}`);
+        return { cdpUrl: browser.webdriver, isNew: false };
       }
+    } catch (e) {
+      log(`   列表查询失败，将重新打开: ${e.message}`);
     }
+    throw new Error(`profile ${profileNo} 已有浏览器运行但无法连接`);
   }
 
-  // 保存
-  const newLines = [toCSVLine(headers)];
-  for (const row of rows) {
-    newLines.push(toCSVLine(headers.map(h => row[h])));
-  }
-  fs.writeFileSync(CSV_OUTPUT, newLines.join('\n'), 'utf8');
-  log(`   已保存到: ${CSV_OUTPUT}`);
-  return { headers, rows, uploaded: toUpload };
+  log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
+  const out = execSync(
+    `npx --yes adspower-browser open-browser '{"profileNo":"${profileNo}"}' 2>&`,
+    { encoding: 'utf8', timeout: 90000 }
+  );
+  const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
+  if (!match) throw new Error('无法获取CDP URL: ' + out.slice(0,200));
+  log(`🔌 CDP: ${match[1]} (新建连接)`);
+  return { cdpUrl: match[1], isNew: true };
+}
+
+function closeBrowser(profileNo) {
+  try { execSync(`npx --yes adspower-browser close-browser '{"profileNo":"${profileNo}"}' 2>&`, {encoding:'utf8', timeout:30000}); }
+  catch (e) {}
 }
 
 // ==================== 浏览器导入 ====================
-function getCdpUrl(profileNo) {
-  // 每次都开新浏览器，不复用已有浏览器，避免旧 Tab 累积
-  return openNewBrowser(profileNo);
-}
-
-function openNewBrowser(profileNo) {
-  return new Promise((resolve, reject) => {
-    const { spawn } = require('child_process');
-    const args = ['--yes', 'adspower-browser', 'open-browser', JSON.stringify({profileNo})];
-    log(`   执行: npx ${args.join(' ')}`);
-    const p = spawn('npx', args, { stdio: ['ignore', 'pipe', 'pipe'], cwd: path.join(__dirname, '..', '..') });
-    let out = '';
-    p.stdout.on('data', d => { out += d.toString(); });
-    p.stderr.on('data', d => { process.stderr.write(d.toString()); });
-    p.on('close', code => {
-      if (code !== 0) { reject(new Error(`npx exit ${code}`)); return; }
-      const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
-      if (match) resolve(match[1]);
-      else reject(new Error('无法获取CDP: ' + out.slice(0, 200)));
-    });
-  });
-}
-
 async function importToShopify(csvPath) {
-  log(`🔌 获取 CDP URL (profile ${PROFILE_NO})...`);
-  const cdpUrl = await getCdpUrl(PROFILE_NO);
-  log(`   CDP: ${cdpUrl}`);
-
-  const browser = await chromium.connectOverCDP(cdpUrl);
-  const ctx = browser.contexts()[0];
-  const pg = await ctx.newPage();
+  let browser = null;
+  let cdpResult = null;
+  let pg = null;
 
   try {
+    cdpResult = openBrowser(PROFILE_NO);
+    log(`🔌 CDP: ${cdpResult.cdpUrl}`);
+    browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
+    const ctx = browser.contexts()[0];
+
+    // 先关闭已有 Tab，只留新建的一个
+    const existingPages = ctx.pages();
+    if (existingPages.length > 1) {
+      for (const p of existingPages) {
+        if (!p.isClosed()) await p.close().catch(() => {});
+      }
+    }
+    pg = await ctx.newPage();
+
     // 1. 打开 Products 页面
     log(`🚀 打开 Shopify Products 页面...`);
     await pg.goto(`https://admin.shopify.com/store/${SHOP}/products`, {
       timeout: 40000,
       waitUntil: 'domcontentloaded'
     });
-    await pg.waitForTimeout(15000); // 等 Cloudflare 验证 + 骨架屏
+    await pg.waitForTimeout(15000);
 
     // 检查是否跳登录页
     const curUrl = pg.url();
     if (curUrl.includes('accounts.shopify.com')) {
       log(`❌ Session 已过期，需要重新登录`);
-      await browser.close();
-      process.exit(1);
+      throw new Error('Session已过期');
     }
     log(`   当前URL: ${curUrl}`);
 
@@ -246,12 +259,20 @@ async function importToShopify(csvPath) {
 
     const modal = pg.locator('.Polaris-Modal-Dialog__Container');
 
-    // 3. 选择 CSV 模式
-    log(`🔘 选择 CSV 导入方式...`);
-    const csvRadio = modal.locator('input[name="importMethodOptions"][value="csv"]').first();
-    if (await csvRadio.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await csvRadio.click({ force: true });
-      log(`   ✅ 已选择 CSV`);
+    // 3. 点击"上传 Shopify 格式的 CSV 文件"文字（选择CSV模式）
+    log(`🔘 选择 CSV 导入方式（点击文字）...`);
+    const csvText = pg.locator('text=上传 Shopify 格式的 CSV 文件').first();
+    if (await csvText.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await csvText.click({ force: true });
+      log(`   ✅ 已点击"上传 Shopify 格式的 CSV 文件"`);
+      await pg.waitForTimeout(3000);
+    } else {
+      log(`   ⚠️ 未找到"上传 Shopify 格式的 CSV 文件"，尝试 radio...`);
+      const csvRadio = modal.locator('input[name="importMethodOptions"][value="csv"]').first();
+      if (await csvRadio.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await csvRadio.click({ force: true });
+        log(`   ✅ 已选择 CSV radio`);
+      }
     }
 
     // 4. 点"下一步"
@@ -318,10 +339,7 @@ async function importToShopify(csvPath) {
     await pg.waitForTimeout(30000);
 
     // 9. 检查错误
-    const errorEls = [
-      '.Polaris-Banner--variantCritical',
-      '.Polaris-Banner--variantWarning',
-    ];
+    const errorEls = ['.Polaris-Banner--variantCritical', '.Polaris-Banner--variantWarning'];
     for (const sel of errorEls) {
       const el = pg.locator(sel).first();
       if (await el.isVisible({ timeout: 2000 }).catch(() => false)) {
@@ -333,22 +351,108 @@ async function importToShopify(csvPath) {
     const finalUrl = pg.url();
     log(`   当前URL: ${finalUrl}`);
     log(`✅ 导入完成`);
-    await pg.screenshot({ path: `/root/.openclaw/workspace_shop/csv-import-final-${Date.now()}.png`, fullPage: true });
 
+  } catch (e) {
+    log(`❌ 导入失败: ${e.message}`);
+    if (pg) await pg.screenshot({ path: `/root/.openclaw/workspace_shop/csv-import-error-${Date.now()}.png`, fullPage: true }).catch(() => {});
+    throw e;
   } finally {
-    await pg.close().catch(() => {});
-    try { await browser.kill(); } catch {}
+    // 关闭新建 Tab
+    if (pg) {
+      try { await pg.close(); log('🔚 已关闭新建的Tab'); } catch (e) {}
+    }
+    // 按 isNew 策略清理
+    if (cdpResult && cdpResult.isNew) {
+      if (browser) {
+        log('🔓 关闭浏览器 (新建CDP连接)');
+        try { await browser.close(); } catch (e) {}
+      }
+      closeBrowser(PROFILE_NO);
+    } else if (browser) {
+      log('🔗 断开CDP连接 (复用已有浏览器)');
+      try { await browser.disconnect(); } catch (e) {}
+    }
   }
 }
 
 // ==================== 主流程 ====================
 async function main() {
-  // Step 1: 处理 CSV（图片上传 + 路径替换）
-  const { headers, rows, uploaded } = await processCSV();
+  log(`📦 导入商品: ${productDir}`);
+  log(`   店铺: ${store.name} (${SHOP})`);
+  log(`   Profile: ${PROFILE_NO}`);
 
-  const totalImages = uploaded.size;
-  const successImages = Array.from(uploaded.values()).filter(v => v !== null).length;
-  log(`📊 图片上传: ${successImages}/${totalImages} 成功`);
+  // Step 1: 处理 CSV（图片上传 + 路径替换）
+  log(`📋 读取 CSV: ${CSV_ORIGINAL}`);
+  const content = fs.readFileSync(CSV_ORIGINAL, 'utf8');
+  const { headers, rows } = parseCSV(content);
+  log(`   商品数量: ${rows.length}`);
+
+  const imageCol = 'Product image URL';
+  const variantImageCol = 'Variant image URL';
+
+  // 收集图片
+  log(`🖼️  收集本地图片...`);
+  const toUpload = new Map();
+  for (const row of rows) {
+    for (const col of [imageCol, variantImageCol]) {
+      const val = row[col];
+      if (val && (val.startsWith('./') || val.startsWith('/'))) {
+        const localPath = val.startsWith('./')
+          ? path.join('/root/.openclaw/TKdown', productDir, val.replace(/^\.\//, ''))
+          : val;
+        if (fs.existsSync(localPath) && !toUpload.has(localPath)) {
+          toUpload.set(localPath, null);
+        }
+      }
+    }
+  }
+
+  if (toUpload.size === 0) {
+    log(`   无本地图片需要上传，使用原始CSV`);
+  } else {
+    log(`   共 ${toUpload.size} 张图片`);
+
+    // 上传到 imgbb
+    log(`☁️  上传到 imgbb...`);
+    let idx = 0;
+    for (const [localPath] of toUpload) {
+      idx++;
+      try {
+        const url = await uploadToImgbb(localPath);
+        toUpload.set(localPath, url);
+        log(`   [${idx}/${toUpload.size}] ✅ ${path.basename(localPath)}`);
+      } catch (e) {
+        log(`   [${idx}/${toUpload.size}] ❌ ${path.basename(localPath)}: ${e.message}`);
+      }
+    }
+
+    // 替换 CSV 中的图片路径
+    log(`✏️  替换 CSV 图片路径...`);
+    for (const row of rows) {
+      for (const col of [imageCol, variantImageCol]) {
+        const val = row[col];
+        if (val && (val.startsWith('./') || val.startsWith('/'))) {
+          const localPath = val.startsWith('./')
+            ? path.join('/root/.openclaw/TKdown', productDir, val.replace(/^\.\//, ''))
+            : val;
+          const newUrl = toUpload.get(localPath);
+          if (newUrl) row[col] = newUrl;
+        }
+      }
+    }
+
+    // 保存 product-imgbb.csv
+    const newLines = [toCSVLine(headers)];
+    for (const row of rows) {
+      newLines.push(toCSVLine(headers.map(h => row[h])));
+    }
+    fs.writeFileSync(CSV_OUTPUT, newLines.join('\n'), 'utf8');
+    log(`   已保存到: ${CSV_OUTPUT}`);
+  }
+
+  const totalImages = toUpload.size;
+  const successImages = Array.from(toUpload.values()).filter(v => v !== null).length;
+  if (totalImages > 0) log(`📊 图片上传: ${successImages}/${totalImages} 成功`);
 
   // Step 2: 浏览器导入
   await importToShopify(CSV_OUTPUT);

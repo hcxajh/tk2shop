@@ -1,5 +1,16 @@
 # CHANGELOG - tk2shop
 
+## v0.2.5 (2026-03-24)
+
+### 新增/修复：import-csv-onestop.js 配置外部化和CDP逻辑对齐
+
+**修复内容：**
+- 配置外部化：`PROFILE_NO`、`SHOP` 从 `config/stores.json` 读取，支持 `--store` 参数
+- CDP 逻辑对齐：改用 `openBrowser()` 返回 `{cdpUrl, isNew}`，与 `upload-product.js` 一致
+- CLI：`node import-csv-onestop.js <商品目录> --store <店铺ID>`
+- 修复：点击"上传 Shopify 格式的 CSV 文件"文字选择CSV模式（原选择器不稳定）
+- 清理：新建 Tab 前关闭已有 Tab，按 `isNew` 策略清理
+
 ## v0.2.4 (2026-03-24)
 
 ### 修复：Publisher/Collector 多处 CDP 资源泄漏和清理逻辑
