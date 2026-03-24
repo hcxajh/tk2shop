@@ -1,5 +1,23 @@
 # CHANGELOG - tk2shop
 
+## v0.3.10 (2026-03-24)
+
+### 整理：待删除旧文件先迁入 `bak/`，并同步更新入口文档
+
+**整理内容：**
+- 先不直接删除旧文件，改为迁入 `bak/` 目录观察是否影响主链路
+- 本次迁入 `bak/` 的文件包括：
+  - `._项目分析报告.md`
+  - `项目分析报告.md`
+  - `scripts/collector/._runner.js`
+  - `scripts/publisher/upload-images.js`
+  - `scripts/publisher/upload-to-imgur.js`
+- 更新 `SKILL.md`，将入口说明切换到当前正式链路：
+  - `runner.js`
+  - `to-csv.js`
+  - `import-csv-onestop.js`
+- 标明 `upload-product.js` 为旧的人肉模拟填表方案，不再作为正式优先链路
+
 ## v0.3.9 (2026-03-24)
 
 ### 文档：沉淀正式发布流程并纠正文档中的旧链路说明

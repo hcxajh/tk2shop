@@ -9,19 +9,25 @@ description: TikTok Shop 商品数据采集与发布插件。从 TikTok Shop 商
 
 ```
 tk2shop/
-├── SKILL.md                    ← 本文档（入口）
+├── SKILL.md                           ← 本文档（入口）
 ├── scripts/
 │   ├── collector/
-│   │   ├── runner.js          ← 自动采集（全流程）
-│   │   └── spawn.js          ← 并发启动器
+│   │   ├── runner.js                 ← 自动采集（全流程）
+│   │   └── spawn.js                  ← 并发启动器
 │   └── publisher/
-│       └── upload-product.js  ← 发布到 Shopify
+│       ├── to-csv.js                 ← product.json → Shopify CSV
+│       └── import-csv-onestop.js     ← Shopify CSV 一体化导入
+├── references/
+│   ├── README.md                     ← 详细说明
+│   └── publish-workflow.md           ← 正式发布流程
 └── config/
-    ├── profile-pool.json      ← AdsPower 配置（师父维护）
-    └── stores.json           ← 店铺配置（师父维护）
+    ├── profile-pool.json             ← AdsPower 配置（师父维护）
+    └── stores.json                   ← 店铺配置（师父维护）
 ```
 
-详细文档见 `references/README.md`。
+详细文档见：
+- `references/README.md`
+- `references/publish-workflow.md`
 
 ## 快速命令
 
@@ -39,11 +45,29 @@ node scripts/collector/spawn.js "url1" "url2" --parallel 3
 node scripts/collector/spawn.js --file urls.txt --parallel 5
 ```
 
-### 发布到 Shopify
+### 生成 Shopify CSV
 
 ```bash
-node scripts/publisher/upload-product.js 2026-03-23/001 --store storeId
+IMGBB_API_KEY=你的密钥 node scripts/publisher/to-csv.js 2026-03-23/001 --store storeId
 ```
+
+### 导入 Shopify
+
+```bash
+IMGBB_API_KEY=你的密钥 node scripts/publisher/import-csv-onestop.js 2026-03-23/001 --store storeId
+```
+
+## 当前正式链路
+
+当前优先使用：
+
+1. `runner.js` 采集 TikTok 商品
+2. `to-csv.js` 生成 Shopify 多变体 CSV
+3. `import-csv-onestop.js` 导入 Shopify 后台
+
+说明：
+- `upload-product.js` 属于旧的人肉模拟填表方案
+- 当前已不再作为正式优先链路
 
 ## 配置（师父维护）
 
