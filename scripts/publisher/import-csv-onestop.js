@@ -19,7 +19,7 @@ const https = require('https');
 // ==================== 配置加载 ====================
 const CONFIG_DIR = path.join(__dirname, '..', '..', 'config');
 const STORES_FILE = path.join(CONFIG_DIR, 'stores.json');
-const IMGBB_API_KEY = '45a4978299f821f5743e361bc1f3472a';
+const IMGBB_API_KEY = process.env.IMGBB_API_KEY || '';
 const IMGBB_API_URL = 'https://api.imgbb.com/1/upload';
 
 function log(msg) { console.log(`[${new Date().toISOString().slice(11,19)}] ${msg}`); }
@@ -66,6 +66,10 @@ const CSV_OUTPUT = path.join('/root/.openclaw/TKdown', productDir, 'product-imgb
 // ==================== imgbb 上传 ====================
 function uploadToImgbb(filePath) {
   return new Promise((resolve, reject) => {
+    if (!IMGBB_API_KEY) {
+      reject(new Error('未提供 IMGBB_API_KEY'));
+      return;
+    }
     const buffer = fs.readFileSync(filePath);
     const filename = path.basename(filePath);
     const boundary = '----FormBoundary' + Date.now();
@@ -101,11 +105,42 @@ function uploadToImgbb(filePath) {
 
 // ==================== CSV 解析 ====================
 function parseCSV(content) {
-  const lines = content.trim().split('\n');
-  const headers = parseCSVLine(lines[0]);
+  const rowsRaw = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    const next = content[i + 1];
+
+    if (ch === '"') {
+      current += ch;
+      if (inQuotes && next === '"') {
+        current += next;
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if ((ch === '\n' || ch === '\r') && !inQuotes) {
+      if (ch === '\r' && next === '\n') i++;
+      if (current.trim() !== '') rowsRaw.push(current);
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (current.trim() !== '') rowsRaw.push(current);
+  if (rowsRaw.length === 0) return { headers: [], rows: [] };
+
+  const headers = parseCSVLine(rowsRaw[0]);
   const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i]);
+  for (let i = 1; i < rowsRaw.length; i++) {
+    const values = parseCSVLine(rowsRaw[i]);
     if (values.length === 1 && !values[0]) continue;
     const row = {};
     headers.forEach((h, idx) => { row[h] = values[idx] || ''; });
@@ -215,6 +250,28 @@ async function importToShopify(csvPath) {
     browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
     const ctx = browser.contexts()[0];
 
+    const logLocatorText = async (label, locator) => {
+      try {
+        const count = await locator.count();
+        const texts = [];
+        for (let i = 0; i < Math.min(count, 8); i++) {
+          const text = (await locator.nth(i).innerText().catch(() => '')).trim();
+          if (text) texts.push(text.replace(/\s+/g, ' ').slice(0, 400));
+        }
+        if (texts.length > 0) {
+          log(`📋 ${label}:`);
+          texts.forEach((t, idx) => log(`   [${idx + 1}] ${t}`));
+        }
+      } catch (e) {}
+    };
+
+    const logPageSummary = async (stage) => {
+      try {
+        const bodyText = (await pg.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').slice(0, 1500);
+        if (bodyText) log(`🧾 ${stage} 页面摘要: ${bodyText}`);
+      } catch (e) {}
+    };
+
     // 先关闭已有 Tab，只留新建的一个
     const existingPages = ctx.pages();
     if (existingPages.length > 1) {
@@ -312,7 +369,8 @@ async function importToShopify(csvPath) {
     }
     if (!uploaded) throw new Error('找不到 file input 上传CSV');
 
-    await pg.waitForTimeout(1000);
+    await pg.waitForTimeout(3000);
+    await logLocatorText('上传后弹窗文本', modal.locator('*'));
 
     // 6. 点"上传并预览"
     log(`🔍 查找"上传并预览"按钮...`);
@@ -329,6 +387,7 @@ async function importToShopify(csvPath) {
       const previewBtn = pg.locator('button:has-text("导入产品")').first();
       if (await previewBtn.isVisible({ timeout: 500 }).catch(() => false)) {
         log(`   ✅ 找到"导入产品"按钮（第${i+1}次）`);
+        await logLocatorText('预览页关键信息', modal.locator('*'));
         await previewBtn.click({ force: true });
         previewFound = true;
         break;
@@ -336,6 +395,7 @@ async function importToShopify(csvPath) {
       await pg.waitForTimeout(1000);
     }
     if (!previewFound) {
+      await logLocatorText('未出现导入按钮时的弹窗文本', modal.locator('*'));
       log(`⚠️ 未找到预览按钮，跳过点击`);
     }
 
@@ -343,7 +403,11 @@ async function importToShopify(csvPath) {
     log(`⏳ 等待导入处理（30s）...`);
     await pg.waitForTimeout(30000);
 
-    // 9. 检查错误
+    // 9. 检查回执
+    await logLocatorText('页面横幅', pg.locator('[role="alert"], .Polaris-Banner, .Polaris-Toast, [data-polaris-toast]'));
+    await logLocatorText('弹窗残留文本', modal.locator('*'));
+    await logPageSummary('导入后');
+
     const errorEls = ['.Polaris-Banner--variantCritical', '.Polaris-Banner--variantWarning'];
     for (const sel of errorEls) {
       const el = pg.locator(sel).first();
@@ -362,11 +426,9 @@ async function importToShopify(csvPath) {
     if (pg) await pg.screenshot({ path: `/root/.openclaw/workspace_shop/csv-import-error-${Date.now()}.png`, fullPage: true }).catch(() => {});
     throw e;
   } finally {
-    // 关闭新建 Tab
     if (pg) {
       try { await pg.close(); log('🔚 已关闭新建的Tab'); } catch (e) {}
     }
-    // 按 isNew 策略清理
     if (cdpResult && cdpResult.isNew) {
       if (browser) {
         log('🔓 关闭浏览器 (新建CDP连接)');
@@ -394,6 +456,7 @@ async function main() {
 
   const imageCol = 'Product image URL';
   const variantImageCol = 'Variant image URL';
+  let csvToImport = CSV_ORIGINAL;
 
   // 收集图片
   log(`🖼️  收集本地图片...`);
@@ -452,6 +515,7 @@ async function main() {
       newLines.push(toCSVLine(headers.map(h => row[h])));
     }
     fs.writeFileSync(CSV_OUTPUT, newLines.join('\n'), 'utf8');
+    csvToImport = CSV_OUTPUT;
     log(`   已保存到: ${CSV_OUTPUT}`);
   }
 
@@ -460,7 +524,8 @@ async function main() {
   if (totalImages > 0) log(`📊 图片上传: ${successImages}/${totalImages} 成功`);
 
   // Step 2: 浏览器导入
-  await importToShopify(CSV_OUTPUT);
+  log(`📤 本次导入文件: ${csvToImport}`);
+  await importToShopify(csvToImport);
 }
 
 main().catch(e => { console.error(`❌ 错误: ${e.message}`); process.exit(1); });

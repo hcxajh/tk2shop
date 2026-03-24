@@ -8,6 +8,7 @@
 4. [踩坑记录](#踩坑记录)
 5. [发布流程](#发布流程)
 6. [并发采集](#并发采集)
+7. [正式发布流程文档](#正式发布流程文档)
 
 ---
 
@@ -61,24 +62,28 @@ https://shop.tiktok.com/us/pdp/wireless-lavalier-microphones-by-pqrqp-for-iphone
   "compareAtPrice": "34.98",
   "sku": "TK-商品ID",
   "status": "active",
-  "images": ["001.jpg", "002.jpg", ...],
-  "descriptionImages": ["desc_001.jpeg", ...],
+  "images": ["001.jpg", "002.jpg"],
+  "descriptionImages": ["desc_001.jpeg"],
+  "variants": [
+    {
+      "name": "2 PCS-iPhone",
+      "sku": "TK-商品ID-01",
+      "price": "15.80",
+      "compareAtPrice": "29.99",
+      "image": "sku_03_2 PCS-iPhone.jpg",
+      "thumbnail": "sku_03_2 PCS-iPhone.jpg",
+      "detail": ""
+    }
+  ],
   "_meta": {
     "productId": "商品ID",
     "source": "tiktok-shop-detail",
-    "extractedAt": "2026-03-23T10:00:00+08:00",
-    "skus": [
-      {
-        "name": "2 PCS-iPhone",
-        "price": "15.80",
-        "compareAtPrice": "29.99",
-        "thumbnail": "sku_03_2 PCS-iPhone.jpg",
-        "detail": ""
-      }
-    ]
+    "extractedAt": "2026-03-23T10:00:00+08:00"
   }
 }
 ```
+
+> 说明：`variants` 是当前正式变体结构；`_meta.skus` 已废弃，不再作为正式发布链路输入。
 
 ---
 
@@ -132,32 +137,40 @@ TikTok 页面价格分段显示：`-47%\n$\n15\n.80\n$29.99`
 
 ## 发布流程
 
+### 当前正式发布方式
+
+当前正式链路优先使用：
+
+1. `scripts/publisher/to-csv.js`
+2. `scripts/publisher/import-csv-onestop.js`
+
+也就是：
+- 先把 `product.json` 转成 Shopify `product.csv`
+- 再通过 Shopify CSV Import 完成导入
+
+正式流程文档见：[`publish-workflow.md`](./publish-workflow.md)
+
 ### 前提条件
 
-- AdsPower 浏览器已打开目标 Shopify 店铺的 admin 并登录
+- AdsPower 浏览器可正常打开目标 Shopify 店铺 admin
 - 该店铺已在 `config/stores.json` 中配置
+- 如需把本地图片上传为外链，运行时提供 `IMGBB_API_KEY`
 
-### 店铺匹配（模糊搜索）
-
-用户可能用以下方式指定店铺：
-- 店铺名称（如"花错"）→ 模糊匹配 `name`
-- profileNo（如 1895750）→ 精确匹配
-- 备注关键词 → 模糊匹配 `remark`
-
-### 命令
+### 生成 CSV
 
 ```bash
-node scripts/publisher/upload-product.js 2026-03-23/001 --store "店铺名称或profileNo"
+IMGBB_API_KEY=你的密钥 node scripts/publisher/to-csv.js 2026-03-23/001 --store vellin1122
 ```
 
-### 发布内容
+### CSV 导入 Shopify
 
-1. 上传商品主图到 Shopify Media
-2. 填写标题、价格（现价 + 划线价）
-3. 填写 SKU
-4. 填写商品描述（支持 descriptionBlocks 图文混排）
-5. 上传描述图片
-6. 设置为 Active 状态并保存
+```bash
+IMGBB_API_KEY=你的密钥 node scripts/publisher/import-csv-onestop.js 2026-03-23/001 --store vellin1122
+```
+
+### 旧方式说明
+
+`upload-product.js` 仍可作为旧的人肉模拟填表方案参考，但**当前正式链路不再优先依赖它**。
 
 ---
 
@@ -178,14 +191,15 @@ node scripts/collector/spawn.js --file urls.txt --parallel 5
 
 ### 并发安全
 
-使用文件锁防止多进程抢同一 profile：
-- 锁文件目录：`/tmp/tk2shop-locks/`
-- 每个 profile 独立锁文件
-- 自动检测锁持有者进程是否存活，死了自动清理
+当前并发安全机制已调整为：
+- **不再依赖本地锁文件**
+- 以 AdsPower 浏览器真实运行状态为准
+- `runner.js` 会优先选择空闲 profile
+- 如果 profile 已运行，会优先尝试复用或重新拉起
 
 ### 预检机制
 
-启动时自动过滤 `profile-pool.json` 中不存在的 profile，避免无效等待。
+启动时会读取 `profile-pool.json` 中的配置与输出目录；如缺少 `outputDir` 或 `profiles`，脚本会直接报错退出。
 
 ---
 

@@ -599,14 +599,7 @@ async function main() {
         seq: seqStr,
         sourceUrl: tiktokUrl,
         source: 'tiktok-shop-detail',
-        extractedAt: new Date().toISOString(),
-        skus: data.skuDetails.map(s => ({
-          name: s.name,
-          thumbnail: s.thumbnailFile || '',
-          price: s.price,
-          compareAtPrice: s.compareAtPrice,
-          detail: s.detail
-        }))
+        extractedAt: new Date().toISOString()
       }
     };
     fs.writeFileSync(path.join(outDir, 'product.json'), JSON.stringify(product, null, 2));

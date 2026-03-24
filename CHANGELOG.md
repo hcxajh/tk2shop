@@ -1,5 +1,102 @@
 # CHANGELOG - tk2shop
 
+## v0.3.9 (2026-03-24)
+
+### 文档：沉淀正式发布流程并纠正文档中的旧链路说明
+
+**文档更新：**
+- 新增 `references/publish-workflow.md`，明确 TikTok → `product.json` → `product.csv` → imgbb → Shopify Import 的正式发布流程
+- 记录当前正式数据结构、执行顺序、核验方式与已知限制
+- 更新 `references/README.md`：
+  - 将 `product.json` 示例改为正式 `variants` 结构
+  - 将发布流程切换为 `to-csv.js + import-csv-onestop.js`
+  - 标明 `upload-product.js` 属于旧的人肉模拟填表方案，不再是优先正式链路
+  - 去掉已过时的本地锁文件说明，改为以 AdsPower 浏览器状态为准
+
+## v0.3.8 (2026-03-24)
+
+### 收尾：import-csv-onestop.js 去硬编码密钥并修复多行 CSV 解析
+
+**收尾内容：**
+- 删除 `import-csv-onestop.js` 中写死的 `imgbb` 密钥，改为只从运行时环境变量 `IMGBB_API_KEY` 读取
+- 当脚本确实需要上传本地图片但未提供 `IMGBB_API_KEY` 时，给出明确报错
+- 修复 `parseCSV()` 对带引号多行描述的处理，避免 `split('\n')` 导致商品数量统计失真
+- 让导入脚本对 `/034/product.csv` 这类包含多行 `Description` 的 Shopify CSV 解析更稳
+
+## v0.3.7 (2026-03-24)
+
+### 修复：首个变体补写 `Variant image URL`
+
+**修复内容：**
+- 多变体商品首行在承载首个变体时，补写对应的 `Variant image URL`
+- 避免 Shopify 只识别主图、不把首个变体标记为“图片已应用”
+- 继续保持首行即首个变体的 Shopify 多变体导入结构
+
+## v0.3.6 (2026-03-24)
+
+### 调整：to-csv.js 改为首行即首个变体，贴近 Shopify 多变体模板
+
+**调整内容：**
+- 多变体商品不再输出“无 SKU 的父产品行 + 全量变体行”
+- 改为首行直接承载第一个变体的数据
+- 后续行只输出剩余变体，整体更贴近 Shopify 官方多变体 CSV 示例
+- 首行同时保留产品级信息，并带上首个变体的 SKU / 价格 / 选项值
+- 首行补充对应的变体图字段，降低 Shopify 将其误判为独立产品的概率
+
+## v0.3.5 (2026-03-24)
+
+### 增强：import-csv-onestop.js 抓取 Shopify 导入回执文本
+
+**增强内容：**
+- 补充导入弹窗在上传后、预览页、导入后的关键文本抓取
+- 增加页面横幅、提示条、残留弹窗文本的日志输出
+- 增加导入后页面摘要日志，便于判断 Shopify 是否真正接受导入
+- 让“按钮点完但结果不明”的情况更容易排查
+
+## v0.3.4 (2026-03-24)
+
+### 修复：import-csv-onestop.js 兼容直接导入现成的 `product.csv`
+
+**修复内容：**
+- 当 CSV 中没有本地图片需要上传时，不再强制查找不存在的 `product-imgbb.csv`
+- 导入脚本改为直接使用现成的 `product.csv`
+- 只有在确实发生本地图上传与路径替换后，才生成并使用 `product-imgbb.csv`
+- 补充日志输出当前实际导入文件路径，便于排查
+
+## v0.3.3 (2026-03-24)
+
+### 调整：to-csv.js 按 Shopify 官方模板收紧变体结构
+
+**调整内容：**
+- 多变体商品的变体行重复写入同一个 `URL handle`
+- 单维变体商品只保留一个选项列
+- `Option1 name` 改为更正式的 `Color`
+- 移除不适合当前商品的 `Port` 选项占位
+- 让 CSV 结构更贴近 Shopify 官方模板示例
+
+## v0.3.2 (2026-03-24)
+
+### 新增：to-csv.js 支持使用 imgbb 图床生成图片外链
+
+**新增内容：**
+- `to-csv.js` 支持通过运行时环境变量 `IMGBB_API_KEY` 上传图片到 imgbb
+- 主图和变体图都会优先写入图床外链，不再使用本地路径或裸文件名
+- 在商品目录下缓存 `imgbb-urls.json`，避免重复上传相同图片
+- `Variant image URL` 改为正式输出可访问外链
+- 修复 CSV 行数统计，改为按真实记录数统计
+
+## v0.3.1 (2026-03-24)
+
+### 调整：正式收口到 `variants`，移除 `_meta.skus`
+
+**调整内容：**
+- `to-csv.js` 改为正式读取 `product.variants`
+- 不再依赖 `_meta.skus`
+- 主产品行的选项值改为取第一个变体的值，便于后续导入链路对齐
+- 变体行的价格、划线价、SKU、变体图都从 `variants` 读取
+- `runner.js` 删除 `_meta.skus`
+- `_meta` 只保留真正的采集元信息：`productId`、`seq`、`sourceUrl`、`source`、`extractedAt`
+
 ## v0.3.0 (2026-03-24)
 
 ### 新增：runner.js 正式输出 `variants` 字段
