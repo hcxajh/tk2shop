@@ -131,10 +131,32 @@ function findAvailableProfile() {
 }
 
 /**
- * 打开AdsPower浏览器，获取Playwright CDP URL
+ * 打开或复用AdsPower浏览器，获取Playwright CDP URL
  * @returns {{ cdpUrl: string, isNew: boolean }}
+ *   - isNew=true: 本次新建的CDP连接，需要用完关闭浏览器
+ *   - isNew=false: 复用的已有连接，用完只断开不关浏览器
  */
 function openBrowser(profileNo) {
+  // 先检查是否已有浏览器运行（与 upload-product.js 一致）
+  if (isProfileActive(profileNo)) {
+    log(`🔁 检测到 profile ${profileNo} 已有浏览器运行，尝试连接...`);
+    try {
+      const out = execSync(
+        `npx --yes adspower-browser list 2>/dev/null`,
+        { encoding: 'utf8', timeout: 15000 }
+      );
+      const data = JSON.parse(out);
+      const browserInfo = (data.data || []).find(b => b.user_id === String(profileNo));
+      if (browserInfo && browserInfo.webdriver && browserInfo.webdriver.startsWith('ws')) {
+        log(`🔌 复用已有 CDP: ${browserInfo.webdriver}`);
+        return { cdpUrl: browserInfo.webdriver, isNew: false };
+      }
+    } catch (e) {
+      log(`   列表查询失败，将重新打开: ${e.message}`);
+    }
+    throw new Error(`profile ${profileNo} 的浏览器已被其他进程占用，请先关闭后再试`);
+  }
+
   log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
   const jsonArg = `{"profileNo":"${profileNo}"}`;
   const out = execSync(
@@ -146,7 +168,7 @@ function openBrowser(profileNo) {
   // 解析CDP URL
   const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
   if (!match) throw new Error('无法获取 CDP URL: ' + out);
-  log(`🔌 CDP: ${match[1]}`);
+  log(`🔌 CDP: ${match[1]} (新建连接)`);
 
   // 等待Chrome完全启动（避免连接失败）
   log(`   等待Chrome启动...`);
@@ -448,6 +470,7 @@ async function main() {
   let cdpResult = null;
   let lockFile = '';
   let browser = null;
+  let pg = null;
   try {
     // 获取文件锁，防止多进程抢同一 profile
     lockFile = acquireLock(profileNo);
@@ -468,7 +491,7 @@ async function main() {
         if (!p.isClosed()) await p.close().catch(() => {});
       }
     }
-    const pg = await ctx.newPage();  // 新建Tab
+    pg = await ctx.newPage();  // 新建Tab
 
     // 4. 执行采集
     const data = await extract(browser, pg, tiktokUrl);

@@ -162,35 +162,33 @@ function isProfileActive(profileNo) {
  * 打开或连接浏览器
  * @returns {{ cdpUrl: string, isNew: boolean }}
  */
+/**
+ * 打开AdsPower浏览器（同步版，用spawn）
+ */
 function openBrowser(profileNo) {
-  if (isProfileActive(profileNo)) {
-    log(`🔁 检测到 profile ${profileNo} 已有浏览器运行，尝试连接...`);
-    try {
-      const out = execSync(
-        `npx --yes adspower-browser list 2>/dev/null`,
-        { encoding: 'utf8', timeout: 15000 }
-      );
-      const data = JSON.parse(out);
-      const browser = (data.data || []).find(b => b.user_id === String(profileNo));
-      if (browser && browser.webdriver && browser.webdriver.startsWith('ws')) {
-        log(`🔌 复用已有 CDP: ${browser.webdriver}`);
-        return { cdpUrl: browser.webdriver, isNew: false };
+  return new Promise((resolve, reject) => {
+    log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
+    const { spawn } = require('child_process');
+    const jsonArg = JSON.stringify({ profileNo: profileNo });
+    const p = spawn('npx', ['--yes', 'adspower-browser', 'open-browser', jsonArg], { timeout: 90000 });
+    let out = '';
+    p.stdout.on('data', d => out += d);
+    p.stderr.on('data', d => out += d);
+    p.on('close', code => {
+      if (code !== 0) {
+        reject(new Error('open-browser 失败: ' + out.slice(0, 200)));
+        return;
       }
-    } catch (e) {
-      log(`   列表查询失败，将重新打开: ${e.message}`);
-    }
-    throw new Error(`profile ${profileNo} 已有浏览器运行但无法连接`);
-  }
-
-  log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
-  const out = execSync(
-    `npx --yes adspower-browser open-browser '{"profileNo":"${profileNo}"}' 2>&`,
-    { encoding: 'utf8', timeout: 90000 }
-  );
-  const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
-  if (!match) throw new Error('无法获取CDP URL: ' + out.slice(0,200));
-  log(`🔌 CDP: ${match[1]} (新建连接)`);
-  return { cdpUrl: match[1], isNew: true };
+      const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
+      if (!match) {
+        reject(new Error('无法获取CDP URL: ' + out.slice(0,200)));
+        return;
+      }
+      log(`🔌 CDP: ${match[1]}`);
+      resolve({ cdpUrl: match[1], isNew: true });
+    });
+    p.on('error', reject);
+  });
 }
 
 function closeBrowser(profileNo) {
@@ -205,7 +203,7 @@ async function importToShopify(csvPath) {
   let pg = null;
 
   try {
-    cdpResult = openBrowser(PROFILE_NO);
+    cdpResult = await openBrowser(PROFILE_NO);
     log(`🔌 CDP: ${cdpResult.cdpUrl}`);
     browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
     const ctx = browser.contexts()[0];

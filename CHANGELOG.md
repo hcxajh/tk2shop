@@ -18,6 +18,10 @@
 - 等待循环同时检测文件信号和浏览器窗口状态
 - 浏览器被外部关闭时自动退出等待，避免脚本卡死
 
+### 修复：import-csv-onestop.js openBrowser execSync 语法错误
+
+- 改用 spawn 异步调用 adspower-browser，避免 shell 引号转义问题
+
 - 加 `{"tiktokUrl":"url","hold":true}` 参数后，采集完成不关浏览器，写文件 `/tmp/tk2shop-hold-{pid}.ready`，用户执行 `echo done > /tmp/tk2shop-hold-{pid}.ready` 确认后继续关闭
 
 ### 修复：runner.js CDP连接稳定性
