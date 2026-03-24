@@ -431,10 +431,12 @@ async function extract(browser, page, tiktokUrl) {
 async function main() {
   // 解析参数
   let tiktokUrl = process.env.TK_TIKTOK_URL || '';
+  let hold = false;
   if (process.argv[2]) {
     try {
       const args = JSON.parse(process.argv[2]);
       tiktokUrl = args.tiktokUrl || args.url || args.link || '';
+      hold = args.hold || false;
     } catch (e) {
       tiktokUrl = process.argv[2];
     }
@@ -442,7 +444,7 @@ async function main() {
   
   if (!tiktokUrl || !tiktokUrl.includes('/pdp/')) {
     console.error('❌ 缺少 TikTok 商品链接参数');
-    console.error('用法: node runner.js \'{"tiktokUrl": "https://shop.tiktok.com/..."}\'');
+    console.error('用法: node runner.js \'{"tiktokUrl": "https://shop.tiktok.com/..."}\' [--hold]');
     process.exit(1);
   }
 
@@ -571,6 +573,13 @@ async function main() {
 
     // 9. 关闭新建的Tab
     await pg.close().catch(() => {});
+
+    // 9b. 如果有 --hold，等用户确认后再关浏览器
+    if (hold) {
+      console.log('\n⏸️  采集完成，浏览器保持开着。验证完成后按回车继续关闭...');
+      const rl = require('readline').createInterface({ input: process.stdin, output: process.stdout });
+      await new Promise(resolve => rl.question('', () => { rl.close(); resolve(); }));
+    }
 
     // 10. 根据是否新建CDP连接来决定关闭策略
     if (cdpResult && cdpResult.isNew) {

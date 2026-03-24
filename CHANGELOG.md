@@ -13,6 +13,10 @@
 - 清理：新建 Tab 前关闭已有 Tab，按 `isNew` 策略清理
 - `stores.json` 更新：添加 vellin1122 店铺配置（profileNo: 1896325）
 
+### 新增：runner.js 支持 --hold 参数
+
+- 加 `{"tiktokUrl":"url","hold":true}` 参数后，采集完成不关浏览器，等用户按回车再关，便于手动验证采集结果
+
 ### 修复：to-csv.js 图片路径格式
 
 - 图片 URL 改为 `/root/...` 格式（不带 `file://` 前缀），便于 import-csv-onestop.js 正确识别本地路径并上传到 imgbb
