@@ -154,6 +154,7 @@ function openBrowser(profileNo) {
     } catch (e) {
       log(`   列表查询失败，将重新打开: ${e.message}`);
     }
+    // 复用失败，抛异常
     throw new Error(`profile ${profileNo} 已有浏览器运行但无法连接`);
   }
 
@@ -218,6 +219,45 @@ async function extract(browser, page, tiktokUrl) {
   log(`🌐 导航到: ${tiktokUrl}`);
   await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForTimeout(3000);
+
+  // 检测验证码
+  const captchaDetected = await page.evaluate(() => {
+    const text = document.body.innerText || '';
+    return text.includes('Verify to continue') || text.includes('Drag the puzzle') || text.includes('captcha');
+  });
+
+  if (captchaDetected) {
+    log(`⚠️ 检测到验证码，请手动在浏览器中完成验证...`);
+    // 等待验证码解除（每5秒检查一次，最多等10分钟）
+    for (let i = 0; i < 120; i++) {
+      try {
+        await page.waitForTimeout(5000);
+      } catch (e) {
+        // 浏览器被关闭了
+        log(`❌ 浏览器已关闭，采集中止`);
+        throw new Error('浏览器被关闭，采集中止');
+      }
+      try {
+        const stillCaptcha = await page.evaluate(() => {
+          const text = document.body.innerText || '';
+          return text.includes('Verify to continue') || text.includes('Drag the puzzle') || text.includes('captcha');
+        });
+        if (!stillCaptcha) {
+          log(`✅ 验证码已解除，重新加载页面...`);
+          // 验证码解除后重新导航，确保页面干净
+          await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await page.waitForTimeout(3000);
+          break;
+        }
+        if (i % 12 === 0) log(`⏳ 等待验证码解除... (${Math.floor((i+1)*5/60)}分钟)`);
+      } catch (e) {
+        // 页面已关闭
+        log(`❌ 页面已关闭，采集中止`);
+        throw new Error('页面已关闭，采集中止');
+      }
+    }
+  }
+
   await page.evaluate(() => { window.scrollTo(0, 0); });
   await page.waitForTimeout(1000);
   await page.evaluate(() => { window.scrollTo(0, 300); });
@@ -442,7 +482,7 @@ async function main() {
     // 4. 执行采集
     const data = await extract(browser, pg, tiktokUrl);
 
-    // 5. 创建输出目录
+    // 4. 创建输出目录
     const today = new Date().toISOString().split('T')[0];
     const productId = tiktokUrl.match(/\/(\d+)(?:\?.*)?$/)
       ? tiktokUrl.match(/\/(\d+)(?:\?.*)?$/)[1]
@@ -529,22 +569,20 @@ async function main() {
     };
     fs.writeFileSync(path.join(outDir, 'product.json'), JSON.stringify(product, null, 2));
 
-    // 6. 关闭新建的Tab和CDP连接（统一在 finally 风格的 try-catch 中）
-    try {
-      if (pg && !pg.isClosed()) await pg.close().catch(() => {});
-      if (cdpResult && cdpResult.isNew) {
-        log('🔓 关闭浏览器 (新建CDP连接)');
-        await browser.close().catch(() => {});
-        closeBrowser(profileNo);
-      } else if (browser) {
-        log('🔗 断开CDP连接 (复用已有浏览器)');
-        await browser.disconnect().catch(() => {});
-      }
-    } catch (e) {
-      log(`⚠️ 清理时出错: ${e.message}`);
+    // 9. 关闭新建的Tab
+    await pg.close().catch(() => {});
+
+    // 10. 根据是否新建CDP连接来决定关闭策略
+    if (cdpResult && cdpResult.isNew) {
+      log('🔓 关闭浏览器 (新建CDP连接)');
+      await browser.close().catch(() => {});
+      closeBrowser(profileNo);
+    } else {
+      log('🔗 断开CDP连接 (复用已有浏览器)');
+      await browser.disconnect().catch(() => {});
     }
 
-    // 7. 输出结果
+    // 11. 输出结果
     const result = {
       success: true,
       outputDir: outDir,
