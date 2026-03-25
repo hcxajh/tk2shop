@@ -19,8 +19,20 @@ const https = require('https');
 // ==================== 配置加载 ====================
 const CONFIG_DIR = path.join(__dirname, '..', '..', 'config');
 const STORES_FILE = path.join(CONFIG_DIR, 'stores.json');
-const IMGBB_API_KEY = process.env.IMGBB_API_KEY || '';
+const OPENCLAW_CONFIG_FILE = '/root/.openclaw/openclaw.json';
 const IMGBB_API_URL = 'https://api.imgbb.com/1/upload';
+
+function loadOpenClawEnv() {
+  try {
+    const data = JSON.parse(fs.readFileSync(OPENCLAW_CONFIG_FILE, 'utf8'));
+    return data.env || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+const OPENCLAW_ENV = loadOpenClawEnv();
+const IMGBB_API_KEY = process.env.IMGBB_API_KEY || OPENCLAW_ENV.IMGBB_API_KEY || '';
 
 function log(msg) { console.log(`[${new Date().toISOString().slice(11,19)}] ${msg}`); }
 
@@ -324,72 +336,94 @@ async function importToShopify(csvPath) {
 
     const modal = pg.locator('.Polaris-Modal-Dialog__Container');
 
-    // 3. 点击"上传 Shopify 格式的 CSV 文件"文字（选择CSV模式）
-    log(`🔘 选择 CSV 导入方式（点击文字）...`);
-    const csvText = pg.locator('text=上传 Shopify 格式的 CSV 文件').first();
-    if (await csvText.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await csvText.click({ force: true });
-      log(`   ✅ 已点击"上传 Shopify 格式的 CSV 文件"`);
-      await pg.waitForTimeout(3000);
-    } else {
-      log(`   ⚠️ 未找到"上传 Shopify 格式的 CSV 文件"，尝试 radio...`);
-      const csvRadio = modal.locator('input[name="importMethodOptions"][value="csv"]').first();
-      if (await csvRadio.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await csvRadio.click({ force: true });
-        log(`   ✅ 已选择 CSV radio`);
-      }
-    }
+    // 3. 兼容新版/旧版导入弹窗
+    log(`🔘 检查导入弹窗结构...`);
+    await logLocatorText('导入弹窗初始文本', modal.locator('*'));
 
-    // 4. 点"下一步"
-    log(`➡️ 点击"下一步"...`);
-    const nextBtn = modal.locator('button:has-text("下一步")').first();
-    if (await nextBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
-      await nextBtn.click({ force: true });
-      log(`   ✅ 已点击`);
-      await pg.waitForTimeout(3000);
-    } else {
-      log(`   ⚠️ 未找到"下一步"按钮，等待后重试...`);
-      await pg.waitForTimeout(3000);
-      if (await nextBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await nextBtn.click({ force: true });
-        log(`   ✅ 重试成功`);
+    const addFileBtn = modal.locator('button:has-text("Add file"), button:has-text("添加文件")').first();
+    const directUploadBtn = modal.locator('button:has-text("Upload and preview"), button:has-text("上传并预览")').first();
+    const legacyNextBtn = modal.locator('button:has-text("下一步"), button:has-text("Next")').first();
+
+    const hasDirectUploadFlow = await addFileBtn.isVisible({ timeout: 2000 }).catch(() => false)
+      || await directUploadBtn.isVisible({ timeout: 2000 }).catch(() => false);
+
+    if (!hasDirectUploadFlow) {
+      log(`   识别为旧版弹窗，尝试选择 CSV 模式...`);
+      const csvText = pg.locator('text=上传 Shopify 格式的 CSV 文件, text="Upload Shopify formatted CSV file"').first();
+      if (await csvText.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await csvText.click({ force: true });
+        log(`   ✅ 已点击 CSV 模式文字`);
         await pg.waitForTimeout(3000);
+      } else {
+        log(`   ⚠️ 未找到 CSV 模式文字，尝试 radio...`);
+        const csvRadio = modal.locator('input[name="importMethodOptions"][value="csv"]').first();
+        if (await csvRadio.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await csvRadio.click({ force: true });
+          log(`   ✅ 已选择 CSV radio`);
+        }
       }
+
+      log(`➡️ 点击下一步...`);
+      if (await legacyNextBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await legacyNextBtn.click({ force: true });
+        log(`   ✅ 已点击下一步`);
+        await pg.waitForTimeout(3000);
+      } else {
+        log(`   ⚠️ 未找到下一步按钮，继续尝试直接上传`);
+      }
+    } else {
+      log(`   ✅ 识别为新版直传弹窗`);
     }
 
-    // 5. 上传 CSV
+    // 4. 上传 CSV
     log(`📁 上传 CSV: ${csvPath}`);
     let uploaded = false;
-    for (let i = 0; i < 8; i++) {
+
+    for (let i = 0; i < 5 && !uploaded; i++) {
       const count = await modal.locator('input[type="file"]').count();
       if (count > 0) {
         await modal.locator('input[type="file"]').first().setInputFiles(csvPath, { force: true });
         uploaded = true;
-        log(`   ✅ 文件已选择`);
+        log(`   ✅ 通过 file input 直接选择文件`);
         break;
       }
       await pg.waitForTimeout(1000);
     }
-    if (!uploaded) throw new Error('找不到 file input 上传CSV');
+
+    if (!uploaded && await addFileBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      log(`   尝试通过 Add file 按钮触发文件选择器...`);
+      const chooserPromise = pg.waitForEvent('filechooser', { timeout: 8000 }).catch(() => null);
+      await addFileBtn.click({ force: true }).catch(() => {});
+      const chooser = await chooserPromise;
+      if (chooser) {
+        await chooser.setFiles(csvPath);
+        uploaded = true;
+        log(`   ✅ 已通过文件选择器上传`);
+      }
+    }
+
+    if (!uploaded) throw new Error('找不到可用的 CSV 上传入口');
 
     await pg.waitForTimeout(3000);
     await logLocatorText('上传后弹窗文本', modal.locator('*'));
 
-    // 6. 点"上传并预览"
-    log(`🔍 查找"上传并预览"按钮...`);
-    const confirmBtn = modal.locator('button:has-text("上传并预览")').first();
-    if (await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+    // 5. 点上传并预览
+    log(`🔍 查找上传并预览按钮...`);
+    const confirmBtn = modal.locator('button:has-text("上传并预览"), button:has-text("Upload and preview")').first();
+    if (await confirmBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       await confirmBtn.click({ force: true });
-      log(`   ✅ 已点击`);
+      log(`   ✅ 已点击上传并预览`);
+    } else {
+      log(`   ⚠️ 未找到上传并预览按钮`);
     }
 
-    // 7. 等待预览画面（最多20秒）
+    // 6. 等待预览画面（最多20秒）
     log(`🔍 等待预览画面...`);
     let previewFound = false;
     for (let i = 0; i < 20; i++) {
-      const previewBtn = pg.locator('button:has-text("导入产品")').first();
+      const previewBtn = pg.locator('button:has-text("导入产品"), button:has-text("Import products")').first();
       if (await previewBtn.isVisible({ timeout: 500 }).catch(() => false)) {
-        log(`   ✅ 找到"导入产品"按钮（第${i+1}次）`);
+        log(`   ✅ 找到导入产品按钮（第${i+1}次）`);
         await logLocatorText('预览页关键信息', modal.locator('*'));
         await previewBtn.click({ force: true });
         previewFound = true;

@@ -353,15 +353,12 @@ async function extract(browser, page, tiktokUrl) {
         const cn = div.className || '';
         if (cn.includes('items-baseline')) {
           const text = div.innerText || '';
-          // innerText如: "-47%\n$\n15\n.80\n$29.99"
-          // 分段拼接：把所有数字/小数点/$拼成完整价格
           const segments = text.split('\n').map(l => l.trim()).filter(l => l);
           let result = '';
           const prices = [];
 
           for (const seg of segments) {
             if (/^\$[\d.]+$/.test(seg)) {
-              // 完整价格：先结算之前的，再记录新的
               if (result) prices.push(result);
               result = seg;
             } else if (seg === '$') {
@@ -371,9 +368,8 @@ async function extract(browser, page, tiktokUrl) {
               result += seg;
             }
           }
-          if (result) prices.push(result); // 别忘了最后一个
+          if (result) prices.push(result);
 
-          // prices如 ['$15.80', '$29.99']
           if (prices.length >= 2) {
             currentPrice = prices[0].replace('$', '');
             compareAtPrice = prices[1].replace('$', '');
@@ -384,7 +380,6 @@ async function extract(browser, page, tiktokUrl) {
         }
       }
 
-      // 兜底：扫所有span找价格
       if (!currentPrice) {
         const spans = document.querySelectorAll('span');
         for (const s of spans) {
@@ -406,6 +401,37 @@ async function extract(browser, page, tiktokUrl) {
       detail: ''
     });
     console.log(`   💰 ${skuVariants[i].name}: 现价$${priceData.currentPrice} 划线价$${priceData.compareAtPrice}`);
+  }
+
+  // 4b. 提取当前已选规格（用于单变体商品补全）
+  const selectedOptions = await page.evaluate(() => {
+    const bodyText = (document.body?.innerText || '').replace(/\r/g, '');
+    const lines = bodyText.split('\n').map(s => s.trim()).filter(Boolean);
+    const stopWords = new Set(['Quantity:', 'Buy now', 'Add to cart', 'Coupon center', 'Shipping & returns']);
+    const optionNames = ['Color', 'Specification', 'Size', 'Style', 'Model', 'Material', 'Capacity', 'Pack', 'Type'];
+    const results = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].replace(/[:：]$/, '');
+      if (!optionNames.includes(line)) continue;
+
+      const values = [];
+      for (let j = i + 1; j < Math.min(lines.length, i + 8); j++) {
+        const next = lines[j].trim();
+        if (!next || stopWords.has(next) || optionNames.includes(next.replace(/[:：]$/, ''))) break;
+        if (next === line) continue;
+        if (!values.includes(next)) values.push(next);
+      }
+
+      if (values.length > 0) {
+        results.push({ name: line, value: values[0], values });
+      }
+    }
+
+    return results;
+  });
+  if (selectedOptions.length > 0) {
+    log(`🧩 规格: ${selectedOptions.map(o => `${o.name}=${o.value}`).join(' | ')}`);
   }
 
   // 5. 描述图文
@@ -476,10 +502,50 @@ async function extract(browser, page, tiktokUrl) {
 
   const descResult = await page.evaluate(() => {
     const result = { text: '', images: [] };
-    const collectFrom = (targetDiv) => {
-      if (!targetDiv) return null;
-      const text = (targetDiv.innerText || '').trim();
+    const stopKeys = [
+      'View more', 'See more', 'Videos for this product', 'About this shop', 'Shop review',
+      'You may also like', 'People also searched for', 'Shipping & returns', 'Shipping & delivery',
+      'Returns made easy', 'TikTok Shop protections', 'Secure payments', 'Data privacy',
+      'Money-back guarantee', 'Delivery guarantee', '24/7 in-app support', 'Easy returns and refunds'
+    ];
+    const specKeys = /^(Plug Type|Region Of Origin|Pack Type|Net Weight|Quantity Per Pack|Makeup Tool Type|Material|Style|Size|Model|Applicable Age Group|Major Material|Power Supply|Battery Properties|Brand|Origin|Item ID)\b/i;
+    const descTitleRe = /^(Product description|Description|About this product)$/i;
+    const detailTitleRe = /^Details$/i;
+
+    const normalizeLines = (text) => (text || '').split('\n').map(s => s.trim()).filter(Boolean);
+
+    const sanitizeText = (text, mode = 'desc') => {
+      const lines = normalizeLines(text);
+      if (lines.length === 0) return '';
+
+      let start = 0;
+      const titleIdx = lines.findIndex(line => descTitleRe.test(line) || detailTitleRe.test(line));
+      if (titleIdx >= 0) start = titleIdx + 1;
+
+      const kept = [];
+      for (let i = start; i < lines.length; i++) {
+        const line = lines[i];
+        if (stopKeys.some(k => line.includes(k))) break;
+        if (descTitleRe.test(line) || detailTitleRe.test(line)) continue;
+        if (/^\d+(\.\d+)?$/.test(line)) continue;
+        if (/^\$?\d+[\d.,]*$/.test(line)) continue;
+        if (line === 'Previous' || line === 'Next') continue;
+        if (line.length <= 1) continue;
+
+        if (mode === 'desc' && specKeys.test(line)) {
+          if (kept.length === 0) continue;
+          break;
+        }
+
+        kept.push(line);
+      }
+
+      return kept.join('\n').trim();
+    };
+
+    const collectImages = (targetDiv) => {
       const images = [];
+      if (!targetDiv) return images;
       const imgs = targetDiv.querySelectorAll('img');
       for (const img of imgs) {
         if (img.naturalWidth < 50) continue;
@@ -488,50 +554,71 @@ async function extract(browser, page, tiktokUrl) {
           images.push(src);
         }
       }
-      return { text, images };
+      return [...new Set(images)];
     };
 
-    const candidates = [];
+    const sectionCandidates = [];
+    const headerNodes = Array.from(document.querySelectorAll('div,span,button')).filter(el => {
+      const cn = el.className || '';
+      const text = (el.innerText || '').trim();
+      return cn.includes('sectionHeader-mTOhOt') && cn.includes('clickable-Q3abyt') && text;
+    });
 
-    // 优先用师父给的选择器：div.flex.flex-col.mt-40.w-full
-    const direct = document.querySelector('[class*="flex-col"][class*="mt-40"][class*="w-full"]');
-    if (direct) candidates.push(direct);
+    for (const header of headerNodes) {
+      const headerText = (header.innerText || '').trim();
+      const mode = descTitleRe.test(headerText) ? 'desc' : (detailTitleRe.test(headerText) ? 'detail' : 'other');
+      if (mode === 'other') continue;
 
-    // 备用：用旧逻辑找展开容器
-    for (const div of document.querySelectorAll('div')) {
-      const cn = div.className || '';
-      if (cn.includes('overflow-hidden') && cn.includes('transition-all')) {
-        candidates.push(div);
+      const candidates = [
+        header.nextElementSibling,
+        header.parentElement?.nextElementSibling,
+        header.parentElement,
+        header.parentElement?.parentElement,
+        header.closest('div')
+      ].filter(Boolean);
+
+      for (const el of candidates) {
+        const text = sanitizeText(el.innerText || '', mode);
+        const images = collectImages(el);
+        sectionCandidates.push({ mode, text, images, score: text.length + images.length * 200 });
       }
     }
 
-    // 再兜底：挑包含产品描述关键词且文本最长的块
+    const descOnly = sectionCandidates.filter(x => x.mode === 'desc' && x.text && x.text.length < 4000);
+    if (descOnly.length > 0) {
+      descOnly.sort((a, b) => b.score - a.score);
+      result.text = descOnly[0].text;
+      result.images = descOnly[0].images;
+      return result;
+    }
+
+    const fallbackCandidates = [];
     for (const div of document.querySelectorAll('div')) {
       const text = (div.innerText || '').trim();
       if (!text || text.length < 80) continue;
-      if (text.includes('About this product') || text.includes('Product description') || text.includes('Details') || text.includes('Description')) {
-        candidates.push(div);
+      if (text.includes('Product description') || text.includes('About this product') || text.includes('Description')) {
+        const cleaned = sanitizeText(text, 'desc');
+        if (!cleaned) continue;
+        fallbackCandidates.push({
+          text: cleaned,
+          images: collectImages(div),
+          score: cleaned.length + collectImages(div).length * 200,
+        });
       }
     }
 
-    let best = { text: '', images: [] };
-    const seen = new Set();
-    for (const el of candidates) {
-      if (!el || seen.has(el)) continue;
-      seen.add(el);
-      const current = collectFrom(el);
-      if (!current) continue;
-      if (current.text.length > best.text.length) best = current;
+    if (fallbackCandidates.length > 0) {
+      fallbackCandidates.sort((a, b) => b.score - a.score);
+      result.text = fallbackCandidates[0].text;
+      result.images = fallbackCandidates[0].images;
     }
 
-    result.text = best.text;
-    result.images = best.images;
     return result;
   });
   log(`📝 描述文字: ${descResult.text.length} 字符`);
   log(`📝 描述图片: ${descResult.images.length} 张`);
 
-  const data = { title, mainImages, skuDetails, descResult };
+  const data = { title, mainImages, skuDetails, descResult, selectedOptions };
   if (!hasMeaningfulProductData(data)) {
     pageState = await inspectPageState(page);
     if (pageState.hasCaptcha || pageState.bodyTextLen < 200 || pageState.productHints.length === 0) {
@@ -654,6 +741,22 @@ async function main() {
 
     // 8. 生成 product.json
     const allImages = [...downloadedMain, ...descImages];
+    const normalizedVariants = (data.skuDetails.length > 0 ? data.skuDetails : [{
+      name: (data.selectedOptions || []).map(o => o.value).filter(Boolean).join(' / ') || 'Default',
+      thumbnail: '',
+      price: '',
+      compareAtPrice: '',
+      detail: ''
+    }]).map((s, idx) => ({
+      name: s.name,
+      sku: `TK-${productId}-${String(idx + 1).padStart(2, '0')}`,
+      price: s.price,
+      compareAtPrice: s.compareAtPrice,
+      image: s.thumbnailFile || '',
+      thumbnail: s.thumbnailFile || '',
+      detail: s.detail || ''
+    }));
+
     const product = {
       title: data.title,
       description: data.descResult.text,
@@ -663,15 +766,8 @@ async function main() {
       status: 'active',
       images: allImages,
       descriptionImages: descImages,
-      variants: data.skuDetails.map((s, idx) => ({
-        name: s.name,
-        sku: `TK-${productId}-${String(idx + 1).padStart(2, '0')}`,
-        price: s.price,
-        compareAtPrice: s.compareAtPrice,
-        image: s.thumbnailFile || '',
-        thumbnail: s.thumbnailFile || '',
-        detail: s.detail || ''
-      })),
+      options: data.selectedOptions || [],
+      variants: normalizedVariants,
       _meta: {
         productId,
         seq: seqStr,

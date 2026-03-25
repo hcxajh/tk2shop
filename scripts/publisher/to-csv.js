@@ -18,7 +18,16 @@ const path = require('path')
 const TK_OUTPUT_DIR = '/root/.openclaw/TKdown'
 const CONFIG_DIR = '/root/.openclaw/skills/tk2shop/config'
 const STORES_FILE = path.join(CONFIG_DIR, 'stores.json')
+const OPENCLAW_CONFIG_FILE = '/root/.openclaw/openclaw.json'
 const IMGBB_UPLOAD_URL = 'https://api.imgbb.com/1/upload'
+
+function loadOpenClawEnv() {
+  try {
+    return JSON.parse(fs.readFileSync(OPENCLAW_CONFIG_FILE, 'utf8')).env || {}
+  } catch {
+    return {}
+  }
+}
 
 function log(msg) { console.log(`[${new Date().toISOString().slice(11,19)}] ${msg}`) }
 
@@ -42,6 +51,7 @@ const CSV_HEADERS = [
   'Title',
   'URL handle',
   'Description',
+  'Body (HTML)',
   'Vendor',
   'Product category',
   'Type',
@@ -119,20 +129,40 @@ function toHandle(title) {
 
 function parseSkuName(name) {
   if (!name) return { opt1: '', opt2: '' }
-  if (name.includes(') ')) {
-    const parts = name.split(') ')
+  const raw = name.trim()
+
+  const leadingQty = raw.match(/^(\d+\s*(?:Count|Counts|Pack|Packs|PCS|Piece|Pieces|Set|Sets))\s+(.+)$/i)
+  if (leadingQty) {
+    return { opt1: leadingQty[2].trim(), opt2: leadingQty[1].trim() }
+  }
+
+  const trailingQty = raw.match(/^(.+?)\s+(\d+\s*(?:Count|Counts|Pack|Packs|PCS|Piece|Pieces|Set|Sets))$/i)
+  if (trailingQty) {
+    return { opt1: trailingQty[1].trim(), opt2: trailingQty[2].trim() }
+  }
+
+  if (raw.includes(') ')) {
+    const parts = raw.split(') ')
     const opt1 = parts[0].replace(/^\(/, '').trim()
     const opt2 = parts[1]?.trim() || ''
     return { opt1, opt2 }
   }
-  const hyIdx = name.lastIndexOf('-')
-  if (hyIdx > 0) {
+
+  const protectedRaw = raw
+    .replace(/\b(?:two|four|three|five|one)-in-(?:one|1)\b/ig, m => m.replace(/-/g, '__HYPHEN__'))
+    .replace(/\b\d+-in-\d+\b/ig, m => m.replace(/-/g, '__HYPHEN__'))
+    .replace(/\b(?:usb|type)-c\b/ig, m => m.replace(/-/g, '__HYPHEN__'))
+    .replace(/\bc-c\b/ig, m => m.replace(/-/g, '__HYPHEN__'))
+
+  const hyphenSplit = protectedRaw.match(/^(.+?)\s+-\s+(.+)$/)
+  if (hyphenSplit) {
     return {
-      opt1: name.slice(0, hyIdx).trim(),
-      opt2: name.slice(hyIdx + 1).trim(),
+      opt1: hyphenSplit[1].replace(/__HYPHEN__/g, '-').trim(),
+      opt2: hyphenSplit[2].replace(/__HYPHEN__/g, '-').trim(),
     }
   }
-  return { opt1: name.trim(), opt2: '' }
+
+  return { opt1: raw, opt2: '' }
 }
 
 function readJson(file, fallback) {
@@ -237,6 +267,40 @@ function buildVariantImageUrl(variant, variantUrls, fallbackUrl) {
   return fallbackUrl || ''
 }
 
+function buildOptionFields(product, variant) {
+  const variants = Array.isArray(product.variants) ? product.variants : []
+  const options = Array.isArray(product.options) ? product.options : []
+  const hasMultipleVariants = variants.length > 1
+  const hasQuantityStyle = variants.some(v => /\b\d+\s*(?:Count|Counts|Pack|Packs|PCS|Piece|Pieces|Set|Sets)\b/i.test(v?.name || ''))
+
+  let opt1Name = '', opt1Val = '', opt2Name = '', opt2Val = ''
+  let opt1Linked = '', opt2Linked = ''
+
+  if (hasMultipleVariants) {
+    const parsed = parseSkuName(variant?.name || '')
+    opt1Name = options[0]?.name || 'Color'
+    opt1Val = parsed.opt1 || variant?.name || ''
+    if (parsed.opt2) {
+      opt2Name = options[1]?.name || 'Specification'
+      opt2Val = parsed.opt2
+    } else if (hasQuantityStyle) {
+      opt2Name = options[1]?.name || 'Specification'
+      opt2Val = '1 Count'
+    }
+    return { opt1Name, opt1Val, opt2Name, opt2Val, opt1Linked, opt2Linked }
+  }
+
+  if (options.length > 0) {
+    opt1Name = options[0]?.name || ''
+    opt1Val = options[0]?.value || ''
+    opt2Name = options[1]?.name || ''
+    opt2Val = options[1]?.value || ''
+    return { opt1Name, opt1Val, opt2Name, opt2Val, opt1Linked, opt2Linked }
+  }
+
+  return { opt1Name, opt1Val, opt2Name, opt2Val, opt1Linked, opt2Linked }
+}
+
 function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow) {
   const variants = Array.isArray(product.variants) ? product.variants : []
   const hasMultipleVariants = variants.length > 1
@@ -245,6 +309,7 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
   const title = isFirstRow ? (product.title || '') : ''
   const handle = hasMultipleVariants ? productHandle : (isFirstRow ? productHandle : '')
   const description = isFirstRow ? (product.description || '') : ''
+  const bodyHtml = isFirstRow ? String(product.description || '').replace(/\n/g, '<br>') : ''
   const vendor = isFirstRow ? '' : ''
   const tags = isFirstRow ? '' : ''
   const status = 'Active'
@@ -261,36 +326,26 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
   const price = variant?.price || product.price || ''
   const compareAt = variant?.compareAtPrice || product.compareAtPrice || ''
 
-  let opt1Name = '', opt1Val = '', opt2Name = '', opt2Val = ''
-  let opt1Linked = '', opt2Linked = ''
-
-  if (hasMultipleVariants) {
-    opt1Name = 'Color'
-    if (isFirstRow) {
-      const firstVariant = variant || variants[0] || null
-      if (firstVariant) {
-        opt1Val = firstVariant.name || ''
-      }
-    } else if (variant) {
-      opt1Name = ''
-      opt1Val = variant.name || ''
-    }
-  }
+  const { opt1Name, opt1Val, opt2Name, opt2Val, opt1Linked, opt2Linked } = buildOptionFields(product, variant)
 
   const imageUrl = isFirstRow ? (mainImageUrl || '') : ''
   const imagePos = isFirstRow ? '1' : ''
   const imageAlt = isFirstRow ? (product.title || '') : ''
   const variantImg = variantImageUrl || ''
 
+  const inventoryTracker = ''
+  const inventoryQuantity = ''
+  const continueSellingWhenOutOfStock = ''
+
   const row = [
-    title, handle, description, vendor, '', '', tags, published, status,
+    title, handle, description, bodyHtml, vendor, '', '', tags, published, status,
     skuVal, '',
     opt1Name, opt1Val, opt1Linked,
     opt2Name, opt2Val, opt2Linked,
     '', '', '',
     price, compareAt, '', 'TRUE', '',
     '', '', '', '',
-    'shopify', '100', 'DENY',
+    inventoryTracker, inventoryQuantity, continueSellingWhenOutOfStock,
     '', 'g', 'TRUE', 'manual',
     imageUrl, imagePos, imageAlt, variantImg, 'FALSE', '', '',
     '', '', '', '', '',
@@ -361,7 +416,8 @@ async function main() {
 
   const product = JSON.parse(fs.readFileSync(productJsonPath, 'utf8'))
   const variants = Array.isArray(product.variants) ? product.variants : []
-  const imgbbApiKey = process.env.IMGBB_API_KEY || ''
+  const openclawEnv = loadOpenClawEnv()
+  const imgbbApiKey = process.env.IMGBB_API_KEY || openclawEnv.IMGBB_API_KEY || ''
 
   log(`📦 商品: ${product.title}`)
   log(`   目录: ${folder}`)

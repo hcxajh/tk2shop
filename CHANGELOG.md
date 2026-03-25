@@ -1,5 +1,125 @@
 # CHANGELOG - tk2shop
 
+## v0.3.22 (2026-03-25)
+
+### 调整：全局关闭 Shopify CSV 库存跟踪字段
+
+**调整内容：**
+- `to-csv.js` 导出 Shopify CSV 时，全局关闭库存跟踪相关字段
+- 以下列统一改为空值：
+  - `Inventory tracker`
+  - `Inventory quantity`
+  - `Continue selling when out of stock`
+- 这样导入后将不再通过 CSV 显式开启 Shopify 库存跟踪，也不再写死默认库存 `100`
+
+## v0.3.21 (2026-03-25)
+
+### 修复：SKU 规格解析通用兼容横杠词组
+
+**修复内容：**
+- `to-csv.js` 重构 `parseSkuName()` 的通用解析策略，避免把正常词组中的横杠误当成规格分隔符
+- 新增对以下常见词组的保护，不再错误拆分：
+  - `two-in-one`
+  - `4-in-1` / `2-in-1`
+  - `usb-c`
+  - `type-c`
+  - `c-c`
+- 仅在出现高置信度分隔格式（如 `A - B`）时才按横杠拆分
+- 对无法稳定拆分的 SKU，改为宁可少拆也不拆错，避免导出错误规格值
+
+**回归验证：**
+- `2026-03-25/004`（镜子商品）规格拆分保持正确
+- `2026-03-25/005`（数据线商品）不再出现 `two-in | one` 这类错误拆分
+
+## v0.3.20 (2026-03-25)
+
+### 修复：Shopify 商品介绍同步写入 Body (HTML)
+
+**修复内容：**
+- `to-csv.js` 生成 Shopify CSV 时，除保留 `Description` 列外，新增同时写入 `Body (HTML)` 列
+- 将采集到的商品描述正文按 HTML 换行格式写入 `Body (HTML)`，提高新版 Shopify 后台对商品介绍字段的识别与覆盖成功率
+- 用于解决 CSV 中本地已有描述内容，但 Shopify 后台商品介绍仍不显示的问题
+
+## v0.3.19 (2026-03-25)
+
+### 修复：按 sectionHeader 标题块区分商品描述与商品详情
+
+**修复内容：**
+- `runner.js` 描述提取逻辑新增基于 `sectionHeader-mTOhOt clickable-Q3abyt` 标题块的识别方式
+- 不再只靠外层容器猜测描述区，而是先识别标题文字：
+  - `Product description / Description / About this product` → 作为商品描述来源
+  - `Details` → 视为商品详情参数块，排除出描述正文
+- 同结构 `div` 的情况下，改为依据标题文本和内容文本做判定，避免把参数表误写进 Shopify 描述，也避免把描述整段过滤成空
+
+## v0.3.18 (2026-03-25)
+
+### 修复：商品描述与商品详情参数分离
+
+**修复内容：**
+- `runner.js` 的描述提取逻辑不再把 `Details` 参数表直接当成商品描述
+- 优先提取 `Product description / About this product / Description` 的正文内容
+- 当页面只有参数表而没有真正描述文案时，描述字段宁可留空，也不再把参数项错误写入 Shopify 商品描述
+- 遇到 `Plug Type / Region Of Origin / Net Weight / Quantity Per Pack` 等参数项时，会在描述提取中自动截断或跳过
+
+## v0.3.17 (2026-03-25)
+
+### 修复：多变体商品按变体名动态拆分规格值
+
+**修复内容：**
+- `to-csv.js` 优化 `parseSkuName()`，新增对数量前置/后置格式的解析：
+  - `1 Count Pink` → `Color=Pink`, `Specification=1 Count`
+  - `Pink + black + white 3 Counts` → `Color=Pink + black + white`, `Specification=3 Counts`
+- 多变体商品导出时，不再错误复用 `product.options` 的静态默认值到所有行
+- 改为按每个变体的 `variant.name` 动态拆分并生成对应的 `Option1/Option2`
+- 当同一商品存在数量型变体而某些行未显式带数量时，自动补全为 `1 Count`
+
+**验证结果：**
+- `2026-03-25/002` 的 14 个变体已正确拆分为各自独立规格值
+- 不再出现 14 行 CSV 全部写成同一组 `Color/Specification` 的错误
+
+## v0.3.16 (2026-03-25)
+
+### 修复：TikTok 商品描述污染与单变体规格丢失
+
+**修复内容：**
+- `runner.js` 新增已选规格提取逻辑，能抓取 `Color`、`Specification` 等当前商品规格值
+- `runner.js` 优化描述提取，限制从商品描述区起始位置截取，并在推荐商品、店铺信息、物流与保障等区块前停止，避免把整页导航、评论、猜你喜欢混进描述
+- `runner.js` 在 `product.json` 中新增 `options` 字段，保留结构化规格信息
+- `to-csv.js` 新增从 `product.options` 生成 Shopify 选项列的能力
+- 单变体商品现在也会正确输出 `Option1/Option2`，避免规格丢失导致 SKU/属性展示异常
+
+**验证结果：**
+- 重采 `1731773758990553652` 后，已正确抓到：`Color=Green`、`Specification=2 pack`
+- 新生成的 CSV 已正确输出：
+  - `Option1 name = Color`
+  - `Option1 value = Green`
+  - `Option2 name = Specification`
+  - `Option2 value = 2 pack`
+- 描述字段已不再包含导航、评论区、店铺信息、猜你喜欢等整页噪音
+
+## v0.3.15 (2026-03-25)
+
+### 优化：发布脚本默认读取全局配置中的图床密钥
+
+**优化内容：**
+- `to-csv.js` 新增从 `/root/.openclaw/openclaw.json` 的 `env.IMGBB_API_KEY` 读取图床密钥
+- `import-csv-onestop.js` 新增从 `/root/.openclaw/openclaw.json` 的 `env.IMGBB_API_KEY` 读取图床密钥
+- 保持运行时环境变量优先级更高；若命令行显式传入 `IMGBB_API_KEY`，仍优先使用显式值
+- 这样后续发布商品时，不再需要每次手动在命令前拼接图床密钥
+
+## v0.3.14 (2026-03-25)
+
+### 修复：兼容 Shopify 新版商品导入弹窗直传流程
+
+**修复内容：**
+- `import-csv-onestop.js` 不再假设导入弹窗一定是“选模式 → 下一步 → 上传文件”的旧流程
+- 新增对新版直传弹窗的识别：弹窗中直接出现“添加文件 / 上传并预览”时，跳过旧版步骤
+- 上传 CSV 时增加双通路：
+  - 优先直接命中 `input[type="file"]`
+  - 兜底通过“添加文件”按钮触发文件选择器
+- 预览确认按钮兼容中英文文本识别
+- 已验证脚本可成功进入新版 Shopify 导入弹窗并完成 CSV 上传与预校验
+
 ## v0.3.13 (2026-03-24)
 
 ### 修复：商品介绍区需二次点击“查看更多”时，完整描述与描述图采集不中断
