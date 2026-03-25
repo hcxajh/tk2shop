@@ -1,5 +1,20 @@
 # CHANGELOG - tk2shop
 
+## v0.3.23 (2026-03-25)
+
+### 文档：新增 Shopify 发布后操作流程记录
+
+**新增内容：**
+- 新增文档：`docs/shopify-post-publish-steps.md`
+- 用于持续记录“商品发布完成后”的 Shopify 后台操作步骤
+- 当前已沉淀的内容包括：
+  - 打开 AdsPower
+  - 新标签页打开 Shopify Admin
+  - 左侧 `Online Store` 的正确点击方式
+  - 主题页右侧主体位于 iframe 的关键结论
+  - 进入 `Edit theme` / 主题编辑器的当前稳定方案
+- 目的：先把人工带跑步骤沉淀清楚，再逐步提炼成自动化脚本
+
 ## v0.3.22 (2026-03-25)
 
 ### 调整：全局关闭 Shopify CSV 库存跟踪字段
