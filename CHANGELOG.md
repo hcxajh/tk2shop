@@ -1,5 +1,46 @@
 # CHANGELOG - tk2shop
 
+## v0.3.24 (2026-03-25)
+
+### 新增：导入后直进 Theme Editor 的最小闭环脚本
+
+**新增内容：**
+- 新增脚本：`scripts/publisher/post-import-theme-setup.js`
+- 当前最小闭环职责：
+  - 连接 AdsPower 浏览器
+  - 基于当前 Shopify 后台页进入 Theme Editor
+  - 切到 `Product`
+  - 创建模板
+  - 进入 `Multicolumn`
+  - 成功后停住
+- 当前刻意不包含：
+  - `Column` 内容编辑
+  - 样式设置
+  - 保存发布
+  - 模板分配商品
+- 同步新增计划文档：
+  - `docs/plans/2026-03-25-theme-editor-post-import-plan.md`
+- 同步更新发布后流程文档，明确这条链路应与 CSV 导入商品流程连起来理解：
+  - 导入成功并确认商品进店后，直接从当前后台上下文进入 Theme Editor
+
+### 优化：AdsPower 浏览器复用与脚本收尾稳定性
+
+**已验证收口：**
+- `post-import-theme-setup.js` 现优先通过 `get-browser-active` 复用已活跃的 AdsPower 浏览器实例
+- AdsPower 的“活跃 / 已打开”查询结果不稳定时，不再把其结果当唯一依据
+- 改为在 `connectOverCDP(...)` 之后，根据真实页面上下文判定是否已命中当前 Shopify 后台 / Theme Editor
+- 若虽经 `open-browser` 建立连接，但已命中现有 Shopify 页面上下文，则按“复用已有浏览器”处理，不再在脚本结束时误关当前浏览器
+- 已修复脚本成功后偶发不退出的问题：当前成功路径会正常结束并返回 `code 0`
+
+**实跑验证：**
+- 已验证可直接复用当前 Theme Editor 上下文继续执行
+- 已验证最小闭环完整跑通并正常退出：
+  - 命中当前后台页
+  - 切到 `Product`
+  - 创建模板
+  - 进入 `Multicolumn`
+  - 进程正常退出
+
 ## v0.3.23 (2026-03-25)
 
 ### 文档：新增 Shopify 发布后操作流程记录

@@ -10,6 +10,17 @@
 - 浏览器：AdsPower
 - 目标：把发布完成后的后台操作，逐步沉淀成稳定可脚本化流程
 
+## 当前链路收口（已修正）
+- 这条流程现在不再理解成“导入完商品后，再单独重新打开一次后台”。
+- 已确认更顺的真实链路是：
+  1. CSV 导入商品
+  2. 确认商品已进店
+  3. 直接基于**当前产品后台上下文**进入 Theme Editor
+  4. 切到 Product
+  5. 创建模板
+  6. 进入 Multicolumn
+- 后续脚本化与记录，都按这条连续链路处理。
+
 ---
 
 ## 步骤 1：打开 AdsPower 浏览器
@@ -145,6 +156,91 @@ Shopify 主题页的右侧主体内容，不在外层主文档里。
 
 ---
 
+## 步骤 6：Theme Editor 内切到 Product 并创建模板
+
+### 当前已确认路径
+1. 先进入 Theme Editor 主体 iframe
+2. 点击顶部模板切换按钮：
+   - `[aria-controls="topbar-picker-templates"]`
+3. 在模板列表里点击：
+   - `li#PRODUCT button`
+4. 再点击：
+   - `li#__create__ button`
+5. 在弹窗里输入模板名
+6. 点击右下角 `Create template`
+
+### 关键结论
+- 不能点 `Product` 文字本身
+- 不能只点 `li#PRODUCT` 容器
+- 必须点里面真正的 `button`
+
+### 输入框注意点
+- 模板名输入框是受控输入，不是简单 `input.value = xxx` 就稳
+- 直接脚本赋值后，值可能回弹为空
+- 应优先使用真实输入事件
+- 如果输入结果和期望不一致，应该报错停住，不要假装继续成功
+
+---
+
+## 步骤 7：进入 Multicolumn
+
+### 当前已确认路径
+- 先锁定：
+  - `li[data-component-extra-section_type="multicolumn"]`
+- 再点击这一行里的主按钮：
+  - `button.Online-Store-UI-NavItem__PrimaryAction_1232d`
+
+### 成功判定
+进入后至少会看到以下其一：
+1. 左侧出现：
+   - `Add Column`
+   - `Column`
+   - `Column`
+   - `Column`
+2. 设置区出现：
+   - `Heading`
+   - `Image`
+   - `Button`
+   - `Layout`
+
+### 错误示范（已踩坑）
+- 点 `Multicolumn` 文字 `span`
+- 点 `Hide section`
+- 点到旁边模块的主按钮
+
+### 结论
+- 主题编辑器左侧模块树，不能靠文字节点乱点
+- 最稳规则是：
+  1. 先找对应 `li`
+  2. 再点该行主按钮
+
+---
+
+## 当前最小脚本落点
+- 已新增最小闭环脚本：
+  - `scripts/publisher/post-import-theme-setup.js`
+- 当前职责只包括：
+  1. 连接店铺浏览器
+  2. 基于当前 Shopify 后台页进入 Theme Editor
+  3. 切到 Product
+  4. 创建模板
+  5. 进入 Multicolumn
+  6. 成功后停住
+- 当前刻意**不包含**：
+  - Column 内容编辑
+  - 样式设置
+  - 保存发布
+  - 模板分配商品
+- 当前已新增并验证的脚本稳定性结论：
+  1. 优先尝试通过 AdsPower 活跃实例复用当前浏览器
+  2. 但 AdsPower 的“活跃 / 已打开”查询结果不能当唯一真相
+  3. 真正是否算复用成功，要以 `connectOverCDP(...)` 后实际命中的 Shopify 页面上下文为准
+  4. 如果已命中当前后台页或 Theme Editor，即使本次连接入口来自 `open-browser`，后续也应按“复用已有浏览器”处理
+  5. 这样可避免脚本结束时误关师父当前正在看的浏览器上下文
+  6. 当前脚本成功路径已验证会正常退出，不再出现主流程完成后进程挂住不退的情况
+
+---
+
 ## 当前已经确认的关键坑位
 
 ### 1. Shopify 后台很多右侧主体不在顶层 DOM
@@ -159,11 +255,16 @@ Shopify 主题页的右侧主体内容，不在外层主文档里。
 - 容易直接爬到整页大容器
 - 看似点击成功，实际页面没变化
 
+### 4. 导入成功后不用再单独重开后台
+- 当前真实链路已经修正为：
+  - 导入成功 → 确认产品进店 → 直接从当前后台上下文进入主题编辑
+- 后续脚本设计必须遵守这一点
+
 ---
 
 ## 当前流程状态
-- 已记录到：进入 Shopify 主题编辑器
-- 下一步：继续在主题编辑器页里，由师父继续一步一步带跑
+- 已记录到：进入 Shopify Theme Editor、切到 Product、创建模板、进入 Multicolumn
+- 下一步：继续在 Multicolumn 下方的 `Add Column / Column / Column / Column` 结构里，由师父继续一步一步带跑
 
 ---
 
