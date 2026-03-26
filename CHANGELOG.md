@@ -1,5 +1,43 @@
 # CHANGELOG - tk2shop
 
+## v0.3.27 (2026-03-26)
+
+### 修复：Shopify CSV 导入兼容，并将描述图统一切到 imgbb
+
+**本轮收口内容：**
+- `scripts/publisher/to-csv.js` 对齐 Shopify 官方 CSV 样例表头，不再额外输出错位的 `Body (HTML)` 列，也移除了尾部空列
+- 商品介绍 HTML 现统一写入 `Description` 列，继续由 `descriptionBlocks` 渲染：
+  - `type: "text"` → `<p>...</p>`
+  - `type: "image"` → `<img ...>`
+- 修复 Shopify 导入报错 `Inventory policy is not included in the list`：
+  - `Inventory tracker = shopify`
+  - `Inventory quantity = 100`
+  - `Continue selling when out of stock = DENY`
+- `scripts/publisher/import-csv-onestop.js` 增强失败判定：
+  - 导入弹窗出现 `There was an error importing your CSV file...` 时明确判失败
+  - 不再误报 `✅ 导入完成`
+- 图片链路正式收口为“全部统一走 imgbb”：
+  - 主图 → imgbb
+  - SKU 图 → imgbb
+  - 描述图 → imgbb
+- `descriptionBlocks` 中的图片 URL 现会按上传返回结果替换为 imgbb 链接，不再继续使用 TikTok 详情图外链
+
+**真实样本闭环验证：**
+- 样本目录：`2026-03-26/010`
+- CSV 已重新生成并通过 Shopify 导入
+- 新导入商品 ID：`9159876346078`
+- 前台商品页已验证：
+  - 正文文本正常显示
+  - 命中 `imgbb` 描述图 `6` 张
+  - 描述图已真实加载（`1600 x 1600`）
+- 当前说明：
+  - `descriptionBlocks -> Description HTML -> Shopify CSV -> Shopify 前台` 这条链路已完成真实闭环
+
+**意义：**
+- Shopify CSV 导入兼容问题已从“无法导入”收口到“稳定可导入”
+- 描述图不再依赖 TikTok 外链，正式改为可控的 imgbb 托管
+- 当前发布链路已具备：标题规范化、结构化描述恢复、主图/SKU 图/描述图统一托管与真实导入验证能力
+
 ## v0.3.26 (2026-03-26)
 
 ### 新增：descriptionBlocks 导出为 Shopify Body (HTML)

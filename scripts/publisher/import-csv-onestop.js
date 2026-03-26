@@ -445,6 +445,11 @@ async function importToShopify(csvPath) {
     await logLocatorText('弹窗残留文本', modal.locator('*'));
     await logPageSummary('导入后');
 
+    const modalText = await modal.textContent().catch(() => '') || '';
+    if (/There was an error importing your CSV file/i.test(modalText)) {
+      throw new Error(modalText.replace(/\s+/g, ' ').trim().slice(0, 500));
+    }
+
     const errorEls = ['.Polaris-Banner--variantCritical', '.Polaris-Banner--variantWarning'];
     for (const sel of errorEls) {
       const el = pg.locator(sel).first();

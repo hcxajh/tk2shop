@@ -51,7 +51,6 @@ const CSV_HEADERS = [
   'Title',
   'URL handle',
   'Description',
-  'Body (HTML)',
   'Vendor',
   'Product category',
   'Type',
@@ -106,7 +105,6 @@ const CSV_HEADERS = [
   'Google Shopping / Custom label 2',
   'Google Shopping / Custom label 3',
   'Google Shopping / Custom label 4',
-  '',
 ]
 
 function escapeCSV(str) {
@@ -127,7 +125,7 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;')
 }
 
-function renderDescriptionBlocksHtml(product) {
+function renderDescriptionBlocksHtml(product, descriptionImageUrls = {}) {
   const blocks = Array.isArray(product?.descriptionBlocks) ? product.descriptionBlocks : []
   if (blocks.length === 0) return ''
 
@@ -143,7 +141,8 @@ function renderDescriptionBlocksHtml(product) {
     }
 
     if (block.type === 'image') {
-      const src = String(block.src || '').trim()
+      const rawSrc = String(block.src || '').trim()
+      const src = descriptionImageUrls[rawSrc] || rawSrc
       if (!src) continue
       parts.push(`<img src="${escapeHtml(src)}" alt="" style="max-width:100%;height:auto;display:block;">`)
     }
@@ -235,6 +234,28 @@ function getImageFiles(productDir) {
   return { mainImages, skuImages }
 }
 
+function getDescriptionImages(productDir, product) {
+  const blocks = Array.isArray(product?.descriptionBlocks) ? product.descriptionBlocks : []
+  const imagesDir = path.join(productDir, 'images')
+  const descFiles = fs.existsSync(imagesDir)
+    ? fs.readdirSync(imagesDir)
+        .filter(f => /^desc_/i.test(f) && /\.(webp|png|jpg|jpeg|gif)$/i.test(f))
+        .sort()
+        .map(f => ({
+          key: `images/${f}`,
+          filename: f,
+          path: path.join(imagesDir, f),
+        }))
+    : []
+
+  const blockImageSrcs = blocks
+    .filter(block => block?.type === 'image' && block?.src)
+    .map(block => String(block.src).trim())
+    .filter(Boolean)
+
+  return { descFiles, blockImageSrcs }
+}
+
 async function uploadToImgbb(filePath, apiKey) {
   const buffer = fs.readFileSync(filePath)
   const body = new URLSearchParams({
@@ -260,19 +281,25 @@ async function prepareHostedImages(productDir, product, apiKey) {
   const cachePath = path.join(productDir, 'imgbb-urls.json')
   const cache = readJson(cachePath, {})
   const { mainImages, skuImages } = getImageFiles(productDir)
+  const { descFiles, blockImageSrcs } = getDescriptionImages(productDir, product)
   const variantMap = new Map()
+  const descriptionImageUrls = {}
 
   if (!apiKey) {
     log('⚠️ 未提供 IMGBB_API_KEY，图片列将回退为本地路径')
+    for (let i = 0; i < Math.min(descFiles.length, blockImageSrcs.length); i++) {
+      descriptionImageUrls[blockImageSrcs[i]] = descFiles[i].path
+    }
     return {
       mainImages: mainImages.map(img => ({ ...img, url: img.path })),
       variantUrls: Object.fromEntries(skuImages.map(img => [img.filename, img.path])),
+      descriptionImageUrls,
       cache,
       cachePath,
     }
   }
 
-  const allImages = [...mainImages, ...skuImages]
+  const allImages = [...mainImages, ...skuImages, ...descFiles]
   for (const img of allImages) {
     if (!cache[img.key]) {
       log(`☁️ 上传图片到 imgbb: ${img.key}`)
@@ -284,11 +311,16 @@ async function prepareHostedImages(productDir, product, apiKey) {
     variantMap.set(img.filename, cache[img.key])
   }
 
+  for (let i = 0; i < Math.min(descFiles.length, blockImageSrcs.length); i++) {
+    descriptionImageUrls[blockImageSrcs[i]] = cache[descFiles[i].key] || descFiles[i].path
+  }
+
   writeJson(cachePath, cache)
 
   return {
     mainImages: mainImages.map(img => ({ ...img, url: cache[img.key] || img.path })),
     variantUrls: Object.fromEntries([...variantMap.entries()]),
+    descriptionImageUrls,
     cache,
     cachePath,
   }
@@ -335,19 +367,17 @@ function buildOptionFields(product, variant) {
   return { opt1Name, opt1Val, opt2Name, opt2Val, opt1Linked, opt2Linked }
 }
 
-function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow) {
+function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow, descriptionImageUrls = {}) {
   const variants = Array.isArray(product.variants) ? product.variants : []
   const hasMultipleVariants = variants.length > 1
   const exportTitle = product.shopifyContent?.title || product.title || ''
-  const blocksDescriptionHtml = renderDescriptionBlocksHtml(product)
+  const blocksDescriptionHtml = renderDescriptionBlocksHtml(product, descriptionImageUrls)
   const exportDescriptionHtml = blocksDescriptionHtml || String(product.description || '').replace(/\n/g, '<br>')
-  const exportDescriptionText = product.description || ''
   const productHandle = toHandle(exportTitle || product.title)
 
   const title = isFirstRow ? exportTitle : ''
   const handle = hasMultipleVariants ? productHandle : (isFirstRow ? productHandle : '')
-  const description = isFirstRow ? exportDescriptionText : ''
-  const bodyHtml = isFirstRow ? exportDescriptionHtml : ''
+  const description = isFirstRow ? exportDescriptionHtml : ''
   const vendor = isFirstRow ? '' : ''
   const tags = isFirstRow ? '' : ''
   const status = 'Active'
@@ -371,12 +401,12 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
   const imageAlt = isFirstRow ? (product.title || '') : ''
   const variantImg = variantImageUrl || ''
 
-  const inventoryTracker = ''
-  const inventoryQuantity = ''
-  const continueSellingWhenOutOfStock = ''
+  const inventoryTracker = 'shopify'
+  const inventoryQuantity = '100'
+  const continueSellingWhenOutOfStock = 'DENY'
 
   const row = [
-    title, handle, description, bodyHtml, vendor, '', '', tags, published, status,
+    title, handle, description, vendor, '', '', tags, published, status,
     skuVal, '',
     opt1Name, opt1Val, opt1Linked,
     opt2Name, opt2Val, opt2Linked,
@@ -387,33 +417,31 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
     '', 'g', 'TRUE', 'manual',
     imageUrl, imagePos, imageAlt, variantImg, 'FALSE', '', '',
     '', '', '', '', '',
-    '', '', '', '',
-    '', '', '', '', '',
-    '',
+    '', '', '', '', ''
   ]
 
   return row.map(escapeCSV).join(',')
 }
 
-function generateCSV(product, hostedMainImages, variantUrls) {
+function generateCSV(product, hostedMainImages, variantUrls, descriptionImageUrls = {}) {
   const variants = Array.isArray(product.variants) ? product.variants : []
   const rows = [CSV_HEADERS.join(',')]
   const firstMainImageUrl = hostedMainImages[0]?.url || ''
 
   if (variants.length === 0) {
-    rows.push(generateRow(product, null, firstMainImageUrl, '', true))
+    rows.push(generateRow(product, null, firstMainImageUrl, '', true, descriptionImageUrls))
     return rows
   }
 
   const firstVariant = variants[0]
   const firstVariantImageUrl = buildVariantImageUrl(firstVariant, variantUrls, firstMainImageUrl)
-  rows.push(generateRow(product, firstVariant, firstMainImageUrl, firstVariantImageUrl, true))
+  rows.push(generateRow(product, firstVariant, firstMainImageUrl, firstVariantImageUrl, true, descriptionImageUrls))
 
   for (let i = 1; i < variants.length; i++) {
     const variant = variants[i]
     const fallbackUrl = hostedMainImages[i]?.url || firstMainImageUrl || ''
     const variantImageUrl = buildVariantImageUrl(variant, variantUrls, fallbackUrl)
-    rows.push(generateRow(product, variant, firstMainImageUrl, variantImageUrl, false))
+    rows.push(generateRow(product, variant, firstMainImageUrl, variantImageUrl, false, descriptionImageUrls))
   }
 
   return rows
@@ -462,7 +490,7 @@ async function main() {
   log(`   店铺: ${store.name}`)
 
   const hosted = await prepareHostedImages(productDir, product, imgbbApiKey)
-  const rows = generateCSV(product, hosted.mainImages, hosted.variantUrls)
+  const rows = generateCSV(product, hosted.mainImages, hosted.variantUrls, hosted.descriptionImageUrls)
   const csv = rows.join('\n')
 
   const csvPath = path.join(productDir, 'product.csv')
