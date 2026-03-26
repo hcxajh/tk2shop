@@ -227,6 +227,37 @@ async function inspectPageState(page) {
   });
 }
 
+function isUsableProductPage(state) {
+  if (!state) return false;
+  if (state.hasCaptcha) return false;
+  return Boolean(
+    state.hasOgTitle ||
+    state.productHints.length > 0 ||
+    state.imageCount >= 3 ||
+    state.bodyTextLen > 1000
+  );
+}
+
+async function openProductPage(page, tiktokUrl) {
+  try {
+    await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+  } catch (err) {
+    const msg = String(err?.message || err || '');
+    if (!/Timeout 30000ms exceeded/.test(msg)) throw err;
+    log('⚠️ domcontentloaded 超时，改为检查页面是否已可采...');
+    await page.waitForTimeout(5000);
+  }
+
+  const pageState = await inspectPageState(page);
+  if (isUsableProductPage(pageState)) {
+    log(`✅ 页面已可用: title=${pageState.title || '空'} text=${pageState.bodyTextLen} img=${pageState.imageCount} hints=${pageState.productHints.join(',') || '无'}`);
+    return pageState;
+  }
+
+  throw new Error(`页面未就绪: title=${pageState.title || '空'} ready=${pageState.readyState} text=${pageState.bodyTextLen} img=${pageState.imageCount} hints=${pageState.productHints.join(',') || '无'}`);
+}
+
 async function waitForPageRecovery(page, tiktokUrl, reason) {
   log(`⚠️ ${reason}，等待页面恢复或人工处理（最多10分钟）...`);
   for (let i = 0; i < 120; i++) {
@@ -245,18 +276,11 @@ async function waitForPageRecovery(page, tiktokUrl, reason) {
       throw new Error('页面已关闭，采集中止');
     }
 
-    const recovered = !state.hasCaptcha && (
-      state.hasOgTitle ||
-      state.productHints.length > 0 ||
-      state.imageCount >= 3 ||
-      state.bodyTextLen > 1000
-    );
+    const recovered = isUsableProductPage(state);
 
     if (recovered) {
-      log(`✅ 页面已恢复，重新加载页面...`);
-      await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(3000);
-      return;
+      log(`✅ 页面已恢复，重新检查商品页状态...`);
+      return await openProductPage(page, tiktokUrl);
     }
 
     if (i % 12 === 0) {
@@ -272,14 +296,12 @@ async function waitForPageRecovery(page, tiktokUrl, reason) {
 // ============================================================
 async function extract(browser, page, tiktokUrl) {
   log(`🌐 导航到: ${tiktokUrl}`);
-  await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.waitForTimeout(3000);
+  let pageState = await openProductPage(page, tiktokUrl);
 
   // 检测验证码/风控页
-  let pageState = await inspectPageState(page);
   if (pageState.hasCaptcha) {
     log(`⚠️ 检测到验证码，请手动在浏览器中完成验证...`);
-    await waitForPageRecovery(page, tiktokUrl, '检测到验证码或风控页');
+    pageState = await waitForPageRecovery(page, tiktokUrl, '检测到验证码或风控页');
   }
 
   await page.evaluate(() => { window.scrollTo(0, 0); });

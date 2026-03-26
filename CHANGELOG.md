@@ -916,7 +916,34 @@
 - 已通过帮助命令检查：`node scripts/publisher/publish-product.js --help`
 - 已在真实样本上作为正式发布入口完成闭环调用
 
-## v0.3.29 (2026-03-26)
+## v0.3.30 (2026-03-26)
+
+### 修复：TikTok 商品页已打开但 `domcontentloaded` 超时导致采集误判失败
+
+**采集入口等待策略（已修通）：**
+- `scripts/collector/runner.js` 新增 `isUsableProductPage(state)`，不再只依赖 `page.goto(..., waitUntil: 'domcontentloaded')` 作为唯一成功条件
+- 新增 `openProductPage(page, tiktokUrl)`：当 `domcontentloaded` 超时但页面其实已打开时，会继续检查商品页可用状态，而不是直接抛错退出
+- 商品页可用判定当前基于以下任一条件：
+  - 存在 `meta[property="og:title"]`
+  - 页面正文已出现 `About this product` / `Product description` / `Sold by` / `Details` 等商品页提示
+  - 页面图片数足够
+  - 页面正文长度足够
+- `waitForPageRecovery(...)` 也已改为复用同一套可用判定，恢复后不再死等 `domcontentloaded`
+
+**真实回归（已打通）：**
+- 新样本目录：`/root/.openclaw/TKdown/2026-03-26/013`
+- TikTok 商品 ID：`1729412357214802850`
+- 真实现象：浏览器肉眼可见商品页已打开，但旧逻辑仍因 `domcontentloaded` 30 秒超时而误判失败并关闭页面
+- 修复后成功完成采集：
+  - 主图 `9`
+  - 描述图 `9`
+  - `descriptionBlocks = 17`
+  - 评论 `3`
+- 后续真实闭环结果：
+  - Shopify 新商品 ID：`9160714944734`
+  - 模板名：`20260326222709`
+  - 已完成“采集 → CSV → Shopify 导入 → Theme Editor 填写 3 条评论 → 保存模板 → 绑定商品”完整链路
+
 
 ### 加固：发布总入口后半段稳定性
 
