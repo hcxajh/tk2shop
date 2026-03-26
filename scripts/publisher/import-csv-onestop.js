@@ -508,16 +508,10 @@ async function importToShopify(csvPath) {
     throw e;
   } finally {
     if (pg) {
-      try { await pg.close(); log('🔚 已关闭新建的Tab'); } catch (e) {}
+      try { await pg.close(); log('🔚 已关闭导入流程新建Tab'); } catch (e) {}
     }
-    if (cdpResult && cdpResult.isNew) {
-      if (browser) {
-        log('🔓 关闭浏览器 (新建CDP连接)');
-        try { await browser.close(); } catch (e) {}
-      }
-      await closeBrowser(PROFILE_NO);
-    } else if (browser) {
-      log('🔗 断开CDP连接 (复用已有浏览器)');
+    if (browser) {
+      log('🔗 导入阶段结束，仅断开CDP连接，浏览器与AdsPower留给后续模板收尾统一退出');
       try { await browser.disconnect(); } catch (e) {}
     }
   }

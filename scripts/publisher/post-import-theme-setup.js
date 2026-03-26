@@ -568,13 +568,33 @@ async function saveTemplate(frame, page) {
   const before = await saveBtn.innerText().catch(() => '');
   log(`💾 点击模板保存: ${before || 'Save'}`);
   await saveBtn.click({ force: true });
-  await page.waitForTimeout(3000);
 
-  const afterBody = (await frame.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ');
-  if (!/Column – Emily|Column – Jason|Column – Mia|Heading|Description/i.test(afterBody)) {
-    log('⚠️ 未抓到明确模板保存提示，按按钮点击成功先继续');
-  } else {
-    log('✅ 已触发模板保存');
+  const saveStarted = Date.now();
+  let saveSettled = false;
+  while (Date.now() - saveStarted < 30000) {
+    const btnText = ((await saveBtn.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+    const disabled = await saveBtn.evaluate(el => {
+      const ariaDisabled = el.getAttribute('aria-disabled');
+      return ariaDisabled === 'true' || el.hasAttribute('disabled') || el.getAttribute('data-disabled') === 'true';
+    }).catch(() => false);
+
+    const frameText = ((await frame.locator('body').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+    const stillEditing = /Column Image|Heading|Column Description|Add Column|Remove section/i.test(frameText);
+    const saveIdle = /^(Save|Saved)$/i.test(btnText) || (!btnText && disabled);
+
+    if (stillEditing && saveIdle) {
+      saveSettled = true;
+      log(`✅ 模板保存已落稳: btn=${btnText || '(空)'} disabled=${disabled}`);
+      break;
+    }
+
+    await page.waitForTimeout(1000);
+  }
+
+  if (!saveSettled) {
+    const finalBtnText = ((await saveBtn.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+    const finalBody = ((await frame.locator('body').innerText().catch(() => '')) || '').replace(/\s+/g, ' ').slice(0, 1200);
+    throw new Error(`模板保存未确认完成: btn=${finalBtnText || '(空)'} body=${finalBody}`);
   }
 }
 
@@ -589,6 +609,7 @@ function getProductAdminUrl(store, reviewAssets, argv = {}) {
 
 async function exitEditor(frame, page) {
   log('↩️ 退出 Theme Editor...');
+  await page.waitForTimeout(1500);
   const exitLink = frame.locator('a[aria-label="Exit"]').first();
   await exitLink.waitFor({ state: 'visible', timeout: 15000 });
   await exitLink.click({ force: true });
@@ -703,6 +724,19 @@ async function bindThemeTemplateAndSave(page, templateName) {
   log(`✅ 商品模板已绑定并保存: ${finalState.value}`);
 }
 
+async function closeCurrentTab(page) {
+  if (!page || page.isClosed()) return;
+  try {
+    const currentUrl = page.url();
+    await page.close({ runBeforeUnload: true }).catch(async () => {
+      await page.close().catch(() => {});
+    });
+    log(`🔚 已关闭当前商品Tab: ${currentUrl}`);
+  } catch (e) {
+    log(`⚠️ 关闭当前商品Tab失败: ${e.message}`);
+  }
+}
+
 async function main() {
   const argv = parseArgs(process.argv);
   if (argv.help) {
@@ -783,8 +817,9 @@ async function main() {
       throw new Error('商品编辑页未就绪，无法继续绑定 Theme template');
     }
     await bindThemeTemplateAndSave(page, argv.templateName);
+    await closeCurrentTab(page);
 
-    log('🎉 模板闭环完成：已创建模板、填写 3 个 Column、保存模板，并绑定到商品');
+    log('🎉 模板闭环完成：已创建模板、填写 3 个 Column、保存模板，并绑定到商品；已关闭当前商品Tab，准备退出AdsPower');
   } finally {
     if (browser) {
       if (cdpResult && cdpResult.isNew) {
