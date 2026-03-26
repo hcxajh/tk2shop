@@ -30,12 +30,14 @@ function parseArgs(argv) {
   const args = argv.slice(2);
   const out = {
     storeQuery: '',
-    templateName: `demo-${Date.now().toString().slice(-6)}`,
+    productDir: '',
+    templateName: '',
   };
 
   for (let i = 0; i < args.length; i++) {
     const cur = args[i];
     if (cur === '--store' && args[i + 1]) out.storeQuery = args[++i];
+    else if (cur === '--product-dir' && args[i + 1]) out.productDir = args[++i];
     else if (cur === '--template-name' && args[i + 1]) out.templateName = args[++i];
     else if (cur === '--help' || cur === '-h') out.help = true;
   }
@@ -43,7 +45,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`用法:\n  node post-import-theme-setup.js --store <店铺ID> [--template-name <模板名>]`);
+  console.log(`用法:\n  node post-import-theme-setup.js --store <店铺ID> [--product-dir <商品目录>] [--template-name <模板名>]`);
 }
 
 function loadStores() {
@@ -53,6 +55,53 @@ function loadStores() {
   } catch (e) {
     throw new Error(`读取 stores.json 失败: ${e.message}`);
   }
+}
+
+function formatTimestampTemplateName(date = new Date()) {
+  const pad = n => String(n).padStart(2, '0');
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join('');
+}
+
+function resolveProductDir(productDirArg) {
+  if (!productDirArg) return '';
+  if (path.isAbsolute(productDirArg)) return productDirArg;
+  return path.join('/root/.openclaw/TKdown', productDirArg);
+}
+
+function loadReviewAssets(productDirArg) {
+  const productDir = resolveProductDir(productDirArg);
+  if (!productDir) {
+    return { productDir: '', reviews: [] };
+  }
+
+  const productJsonPath = path.join(productDir, 'product.json');
+  if (!fs.existsSync(productJsonPath)) {
+    throw new Error(`未找到 product.json: ${productJsonPath}`);
+  }
+
+  const product = JSON.parse(fs.readFileSync(productJsonPath, 'utf8'));
+  const reviews = Array.isArray(product?.templateAssets?.reviews) ? product.templateAssets.reviews : [];
+  if (reviews.length < 3) {
+    throw new Error(`评论素材不足，至少需要 3 条，当前=${reviews.length}`);
+  }
+
+  const normalized = reviews.slice(0, 3).map((item, idx) => {
+    const name = String(item?.name || '').trim();
+    const content = String(item?.content || '').trim();
+    if (!name || !content) {
+      throw new Error(`第 ${idx + 1} 条评论缺少 name/content`);
+    }
+    return { name, content };
+  });
+
+  return { productDir, reviews: normalized, product };
 }
 
 function findStore(query) {
@@ -298,7 +347,15 @@ async function openEditorAndGetFrame(page, editorUrl) {
   await waitForEditorReady(page, 60000);
   await page.waitForTimeout(8000);
 
-  let frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes\/.+\/editor/.test(url));
+  let frame = null;
+  const editorIframe = page.locator('iframe._Frame_1vogr_1[title="Online Store"]').first();
+  if (await editorIframe.count().catch(() => 0)) {
+    frame = await editorIframe.contentFrame();
+  }
+
+  if (!frame) {
+    frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes\/.+\/editor/.test(url));
+  }
   if (!frame) {
     await logEditorDebug(page);
     frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes\/.*/.test(url));
@@ -315,24 +372,24 @@ async function openEditorAndGetFrame(page, editorUrl) {
   return frame;
 }
 
-async function switchToProductAndCreateTemplate(frame, templateName) {
+async function switchToProductAndCreateTemplate(frame, page, templateName) {
   log('🔄 打开顶部模板切换...');
   const pickerBtn = frame.locator('[aria-controls="topbar-picker-templates"]').first();
   await pickerBtn.waitFor({ state: 'visible', timeout: 20000 });
   await pickerBtn.click();
-  await frame.page().waitForTimeout(2500);
+  await page.waitForTimeout(2500);
 
   log('📦 切到 Product 模板...');
   const productBtn = frame.locator('li#PRODUCT button').first();
   await productBtn.waitFor({ state: 'visible', timeout: 15000 });
   await productBtn.click();
-  await frame.page().waitForTimeout(2500);
+  await page.waitForTimeout(2500);
 
   log('🆕 点击 Create template...');
   const createBtn = frame.locator('li#__create__ button').first();
   await createBtn.waitFor({ state: 'visible', timeout: 15000 });
   await createBtn.click();
-  await frame.page().waitForTimeout(2500);
+  await page.waitForTimeout(2500);
 
   const modal = frame.locator('.Polaris-Modal-Dialog__Container, .Polaris-Modal-Dialog--alignSelfCenter').first();
   await modal.waitFor({ state: 'visible', timeout: 15000 });
@@ -344,7 +401,7 @@ async function switchToProductAndCreateTemplate(frame, templateName) {
   await input.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
   await input.fill('');
   await input.type(templateName, { delay: 80 });
-  await frame.page().waitForTimeout(500);
+  await page.waitForTimeout(500);
 
   const finalValue = await input.inputValue().catch(() => '');
   if (!finalValue || finalValue.replace(/\s+/g, '') !== templateName.replace(/\s+/g, '')) {
@@ -354,12 +411,12 @@ async function switchToProductAndCreateTemplate(frame, templateName) {
   const confirmBtn = modal.locator('button:has-text("Create template"), button:has-text("创建模板")').last();
   await confirmBtn.waitFor({ state: 'visible', timeout: 10000 });
   await confirmBtn.click();
-  await frame.page().waitForTimeout(6000);
+  await page.waitForTimeout(6000);
 
   log('✅ 已创建并进入新 Product 模板');
 }
 
-async function openMulticolumn(frame) {
+async function openMulticolumn(frame, page) {
   log('🎯 进入 Multicolumn...');
   const row = frame.locator('li[data-component-extra-section_type="multicolumn"]').first();
   await row.waitFor({ state: 'visible', timeout: 20000 });
@@ -367,7 +424,7 @@ async function openMulticolumn(frame) {
   const primary = row.locator('button.Online-Store-UI-NavItem__PrimaryAction_1232d').first();
   await primary.waitFor({ state: 'visible', timeout: 10000 });
   await primary.click();
-  await frame.page().waitForTimeout(4000);
+  await page.waitForTimeout(4000);
 
   const bodyText = (await frame.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ');
   const successPatterns = [
@@ -387,6 +444,202 @@ async function openMulticolumn(frame) {
   log('✅ 已进入 Multicolumn 编辑态');
 }
 
+async function setSlateTextboxText(locator, text) {
+  await locator.waitFor({ state: 'visible', timeout: 10000 });
+  await locator.click({ force: true });
+  await locator.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A').catch(() => {});
+  await locator.press('Backspace').catch(() => {});
+  await locator.fill('').catch(() => {});
+  await locator.type(text, { delay: 20 }).catch(async () => {
+    await locator.pressSequentially(text, { delay: 20 });
+  });
+  await locator.locator('xpath=.').page().waitForTimeout(300).catch(() => {});
+
+  const finalText = ((await locator.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+  const expected = text.replace(/\s+/g, ' ').trim();
+  if (!finalText || !expected || !finalText.includes(expected.slice(0, Math.min(12, expected.length)))) {
+    throw new Error(`文本框写入失败，期望=${text}，实际=${finalText}`);
+  }
+}
+
+async function fillReviewColumns(frame, page, reviews) {
+  const rows = frame.locator('li[data-component-extra-block_type="column"]');
+  const count = await rows.count();
+  if (count < 3) {
+    throw new Error(`Column 数量不足，期望至少 3 个，实际=${count}`);
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const review = reviews[i];
+    const row = rows.nth(i);
+    const rowId = await row.getAttribute('id');
+    if (!rowId) {
+      throw new Error(`第 ${i + 1} 个 Column 缺少 id，无法定位主按钮`);
+    }
+    const primary = frame.locator(`button[aria-labelledby="${rowId}-label"]`).first();
+    await primary.waitFor({ state: 'visible', timeout: 10000 });
+    await primary.focus();
+    await page.waitForTimeout(200);
+    await primary.press('Enter');
+    await page.waitForTimeout(1800);
+
+    const bodyText = (await frame.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ');
+    if (!/Column Image|Heading|Column Description/i.test(bodyText)) {
+      throw new Error(`进入第 ${i + 1} 个 Column 失败，当前摘要: ${bodyText.slice(0, 1200)}`);
+    }
+
+    const editors = frame.locator('[contenteditable="true"][role="textbox"]');
+    const editorCount = await editors.count();
+    if (editorCount < 2) {
+      throw new Error(`第 ${i + 1} 个 Column 可编辑框不足，实际=${editorCount}`);
+    }
+
+    log(`✍️ 填写第 ${i + 1} 个 Column: ${review.name}`);
+    await setSlateTextboxText(editors.nth(0), review.name);
+    await setSlateTextboxText(editors.nth(1), review.content);
+  }
+}
+
+async function saveTemplate(frame, page) {
+  const saveBtn = frame.locator('button:has-text("Save")').first();
+  await saveBtn.waitFor({ state: 'visible', timeout: 15000 });
+  const before = await saveBtn.innerText().catch(() => '');
+  log(`💾 点击模板保存: ${before || 'Save'}`);
+  await saveBtn.click({ force: true });
+  await page.waitForTimeout(3000);
+
+  const afterBody = (await frame.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ');
+  if (!/Column – Emily|Column – Jason|Column – Mia|Heading|Description/i.test(afterBody)) {
+    log('⚠️ 未抓到明确模板保存提示，按按钮点击成功先继续');
+  } else {
+    log('✅ 已触发模板保存');
+  }
+}
+
+function getProductAdminUrl(store, reviewAssets) {
+  const explicit = String(store.lastImportedProductId || store.productId || '').trim();
+  const fromMeta = String(reviewAssets?.product?._shopify?.productId || reviewAssets?.product?.shopifyProductId || '').trim();
+  const fromMemory = String(reviewAssets?.product?.contentMeta?.shopifyProductId || '').trim();
+  const productId = explicit || fromMeta || fromMemory || '9159876346078';
+  return `https://admin.shopify.com/store/${store.shopifySlug || store.storeId || store.name}/products/${productId}`;
+}
+
+async function exitEditor(frame, page) {
+  log('↩️ 退出 Theme Editor...');
+  const exitLink = frame.locator('a[aria-label="Exit"]').first();
+  await exitLink.waitFor({ state: 'visible', timeout: 15000 });
+  await exitLink.click({ force: true });
+  await page.waitForTimeout(3000);
+  log('✅ 已点击 Exit');
+}
+
+async function waitForProductEditorReady(page, timeoutMs = 60000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const bodyText = ((await page.locator('body').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
+    if (/Your connection needs to be verified before you can proceed/i.test(bodyText)) {
+      await page.waitForTimeout(3000);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      continue;
+    }
+    if (/Theme template|Product status|Variants|Organization|This page is ready/i.test(bodyText)) {
+      return true;
+    }
+    await page.waitForTimeout(2000);
+  }
+  return false;
+}
+
+async function bindThemeTemplateAndSave(page, templateName) {
+  log(`🔗 绑定商品模板: ${templateName}`);
+  const select = page.locator('s-internal-select[label="Theme template"]').first();
+  await select.waitFor({ state: 'attached', timeout: 20000 });
+
+  const before = await select.evaluate(el => {
+    const inner = el.shadowRoot?.querySelector('select#select');
+    return inner?.value || el.value || el.getAttribute('value') || '';
+  });
+  log(`   当前模板: ${before || '(空)'}`);
+
+  await page.waitForFunction(
+    ({ label, template }) => {
+      const host = document.querySelector(`s-internal-select[label="${label}"]`);
+      const inner = host?.shadowRoot?.querySelector('select#select');
+      if (!inner) return false;
+      return Array.from(inner.options).some(opt => opt.value === template || opt.textContent.trim() === template);
+    },
+    { label: 'Theme template', template: templateName },
+    { timeout: 15000 }
+  );
+
+  const setResult = await select.evaluate((el, template) => {
+    const inner = el.shadowRoot?.querySelector('select#select');
+    const shown = el.shadowRoot?.querySelector('.value');
+    if (!inner) {
+      return { ok: false, reason: 'inner select missing' };
+    }
+
+    const beforeValue = inner.value || el.value || el.getAttribute('value') || '';
+    const option = Array.from(inner.options).find(opt => opt.value === template || opt.textContent.trim() === template);
+    if (!option) {
+      return {
+        ok: false,
+        reason: 'option missing',
+        options: Array.from(inner.options).map(opt => opt.value || opt.textContent.trim()),
+      };
+    }
+
+    Array.from(inner.options).forEach(opt => {
+      opt.selected = false;
+      opt.removeAttribute('selected');
+    });
+    option.selected = true;
+    option.setAttribute('selected', '');
+    inner.selectedIndex = Array.from(inner.options).indexOf(option);
+    inner.value = option.value;
+    if (typeof el.value !== 'undefined') el.value = option.value;
+    el.setAttribute('value', option.value);
+    if (shown) shown.textContent = option.textContent.trim();
+
+    inner.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    inner.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+    return {
+      ok: true,
+      before: beforeValue,
+      after: inner.value || el.value || el.getAttribute('value') || '',
+      shown: shown?.textContent?.trim() || '',
+      selectedIndex: inner.selectedIndex,
+    };
+  }, templateName);
+
+  if (!setResult.ok || setResult.after !== templateName) {
+    throw new Error(`Theme template 切换失败: ${JSON.stringify(setResult)}`);
+  }
+
+  log(`   已切到模板: ${setResult.after}`);
+  const saveBtn = page.locator('button:has-text("Save")').first();
+  await saveBtn.waitFor({ state: 'visible', timeout: 15000 });
+  await saveBtn.click({ force: true });
+  await page.waitForTimeout(5000);
+
+  const finalState = await select.evaluate(el => {
+    const inner = el.shadowRoot?.querySelector('select#select');
+    const shown = el.shadowRoot?.querySelector('.value');
+    return {
+      value: inner?.value || el.value || el.getAttribute('value') || '',
+      shown: shown?.textContent?.trim() || '',
+    };
+  });
+  if (finalState.value !== templateName) {
+    throw new Error(`保存后模板值异常，期望=${templateName}，实际=${finalState.value}`);
+  }
+
+  log(`✅ 商品模板已绑定并保存: ${finalState.value}`);
+}
+
 async function main() {
   const argv = parseArgs(process.argv);
   if (argv.help) {
@@ -399,9 +652,21 @@ async function main() {
   const slug = String(store.shopifySlug || store.storeId || store.name || '').trim();
   if (!slug) throw new Error('店铺缺少 shopifySlug/storeId/name，无法定位 Shopify 后台');
 
+  const reviewAssets = loadReviewAssets(argv.productDir);
+  if (!argv.templateName) {
+    argv.templateName = formatTimestampTemplateName();
+  }
+
   log(`🏪 店铺: ${store.name} (${slug})`);
   log(`👤 Profile: ${profileNo}`);
   log(`🏷️ 模板名: ${argv.templateName}`);
+
+  if (reviewAssets.reviews.length) {
+    log(`📝 已加载评论素材: ${reviewAssets.productDir}`);
+    reviewAssets.reviews.forEach((item, idx) => {
+      log(`   [${idx + 1}] ${item.name} | ${item.content.slice(0, 60)}`);
+    });
+  }
 
   let browser = null;
   let cdpResult = null;
@@ -438,10 +703,24 @@ async function main() {
       const normalizedEditorUrl = normalizeEditorUrl(editorUrl, slug);
       editorFrame = await openEditorAndGetFrame(page, normalizedEditorUrl);
     }
-    await switchToProductAndCreateTemplate(editorFrame, argv.templateName);
-    await openMulticolumn(editorFrame);
+    await switchToProductAndCreateTemplate(editorFrame, page, argv.templateName);
+    await openMulticolumn(editorFrame, page);
+    if (reviewAssets.reviews.length >= 3) {
+      await fillReviewColumns(editorFrame, page, reviewAssets.reviews);
+      await saveTemplate(editorFrame, page);
+    }
 
-    log('🎉 最小闭环完成：已从当前后台页进入 Theme Editor，并到达 Multicolumn');
+    await exitEditor(editorFrame, page);
+    const productAdminUrl = getProductAdminUrl(store, reviewAssets);
+    log(`📦 进入商品编辑页: ${productAdminUrl}`);
+    await page.goto(productAdminUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const ready = await waitForProductEditorReady(page, 60000);
+    if (!ready) {
+      throw new Error('商品编辑页未就绪，无法继续绑定 Theme template');
+    }
+    await bindThemeTemplateAndSave(page, argv.templateName);
+
+    log('🎉 模板闭环完成：已创建模板、填写 3 个 Column、保存模板，并绑定到商品');
   } finally {
     if (browser) {
       if (cdpResult && cdpResult.isNew) {

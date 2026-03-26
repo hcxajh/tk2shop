@@ -16,6 +16,8 @@ const path = require('path');
 const fs = require('fs');
 const https = require('https');
 
+const POST_IMPORT_THEME_SETUP = path.join(__dirname, 'post-import-theme-setup.js');
+
 // ==================== 配置加载 ====================
 const CONFIG_DIR = path.join(__dirname, '..', '..', 'config');
 const STORES_FILE = path.join(CONFIG_DIR, 'stores.json');
@@ -248,6 +250,27 @@ function closeBrowser(profileNo) {
       p.on('close', () => resolve());
       p.on('error', () => resolve());
     } catch (e) { resolve(); }
+  });
+}
+
+function runPostImportThemeSetup(productDir, storeId) {
+  return new Promise((resolve, reject) => {
+    if (!fs.existsSync(POST_IMPORT_THEME_SETUP)) {
+      return reject(new Error(`未找到 post-import-theme-setup.js: ${POST_IMPORT_THEME_SETUP}`));
+    }
+
+    log(`🎨 导入成功，继续执行模板收尾...`);
+    const args = [POST_IMPORT_THEME_SETUP, '--store', storeId, '--product-dir', productDir];
+    const child = spawn('node', args, {
+      cwd: path.dirname(POST_IMPORT_THEME_SETUP),
+      stdio: 'inherit',
+    });
+
+    child.on('close', code => {
+      if (code === 0) return resolve();
+      reject(new Error(`post-import-theme-setup.js 执行失败，退出码=${code}`));
+    });
+    child.on('error', reject);
   });
 }
 
@@ -568,6 +591,9 @@ async function main() {
   // Step 2: 浏览器导入
   log(`📤 本次导入文件: ${csvToImport}`);
   await importToShopify(csvToImport);
+
+  // Step 3: 导入后模板收尾
+  await runPostImportThemeSetup(productDir, store.storeId || store.name || SHOPIFY_SLUG);
 }
 
 main().catch(e => { console.error(`❌ 错误: ${e.message}`); process.exit(1); });

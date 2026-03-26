@@ -1,5 +1,75 @@
 # CHANGELOG - tk2shop
 
+## v0.3.28 (2026-03-26)
+
+### 新增：Theme Editor 评论模板自动填写并自动绑定商品模板
+
+**本轮新增内容：**
+- `scripts/publisher/post-import-theme-setup.js` 现已打通完整后处理闭环：
+  1. 从 `product.json.templateAssets.reviews` 读取 3 条评论素材
+  2. 自动生成 Product 模板名 `YYYYMMDDHHmmss`
+  3. 进入 Shopify Theme Editor 的 `Multicolumn`
+  4. 依次点击左侧 3 个 `Column`
+  5. 在右侧 `Column` 弹窗中填写：
+     - `Heading` → 用户名
+     - `Description` → 好评内容
+  6. 点击 **iframe 内部** 的 `Save` 保存模板
+  7. 点击左上角 `Exit` 退出 Theme Editor
+  8. 自动进入对应商品后台编辑页
+  9. 将商品右下角 `Theme template` 绑定到刚创建的模板
+  10. 点击商品页顶部 `Save` 完成模板绑定保存
+- Theme template 绑定逻辑已针对 Shopify 后台实际控件修正：
+  - 当前商品页使用的是 `s-internal-select[label="Theme template"]`
+  - 不再按普通下拉菜单可见项点击处理
+  - 改为直接设置组件值并触发 `input/change` 事件，再回读确认值已切换
+- 对 Shopify 验证页增加了等待与刷新处理：
+  - 若商品编辑页出现 `Your connection needs to be verified before you can proceed`
+  - 脚本会继续等待并自动刷新，直到真正进入商品编辑页
+
+**真实验证结果：**
+- 店铺：`vellin1122`
+- 样本目录：`2026-03-26/010`
+- 已成功创建并填写模板：`20260326162154`
+- 已成功将商品绑定到该模板：
+  - 商品 ID：`9159876346078`
+  - `Theme template` 从 `Default product` 切换为 `20260326162154`
+- 当前说明：
+  - `评论素材 -> Theme Editor Multicolumn -> 商品 Theme template 绑定` 已完成真实闭环
+
+**最终加固与回归补充：**
+- 左侧 `Column` 的稳定打开方式已从不稳定点击，收口为：
+  - 基于 `li[data-component-extra-block_type="column"]` 的 `id`
+  - 定位 `button[aria-labelledby="<rowId>-label"]`
+  - 先 `focus()` 再 `press('Enter')`
+- 商品页 `Theme template` 最终可靠绑定方式已修正为：
+  - 进入 `s-internal-select[label="Theme template"]` 的 `shadowRoot`
+  - 操作内部原生 `select#select`
+  - 令目标 `<option>` 真正 selected
+  - 同步 `selectedIndex / select.value / host.value / 显示文本`
+  - 触发 `input/change`
+  - 点击商品页顶部 `Save`
+- 新增了模板 option 等待逻辑，避免刚创建模板后商品页下拉列表尚未完成可见同步时误判 `option missing`
+- 最终完整端到端回归成功：
+  - 本轮模板：`20260326172538`
+  - 3 个 Column 已自动填写：`Emily / Jason / Mia`
+  - 模板已保存并退出 Theme Editor
+  - 商品 `9159876346078` 已成功绑定到模板 `20260326172538`
+  - 脚本日志最终结果：`🎉 模板闭环完成：已创建模板、填写 3 个 Column、保存模板，并绑定到商品`
+- `scripts/publisher/import-csv-onestop.js` 已正式串接导入后模板收尾：
+  - CSV 导入成功后会自动调用 `post-import-theme-setup.js`
+  - 实现 `CSV 导入 -> 评论模板填写 -> 商品模板绑定` 一次跑完
+- 串接后的真实主流程回归成功：
+  - 命令：`node scripts/publisher/import-csv-onestop.js 2026-03-26/010 --store vellin1122`
+  - 导入完成后已自动继续执行模板收尾
+  - 本轮自动创建并绑定模板：`20260326173731`
+  - 商品 `9159876346078` 最终已成功切到模板 `20260326173731`
+
+**意义：**
+- 评论素材不再只是留档，现已真正进入 Shopify 模板编辑自动化链路
+- 商品导入后可自动把“评论模板”直接挂到对应商品，减少手工收尾
+- `post-import-theme-setup.js` 已从“最小闭环”升级为“可直接落到商品”的正式流程
+- `import-csv-onestop.js` 现已升级为包含导入后模板收尾的一体化正式发布链路
+
 ## v0.3.27 (2026-03-26)
 
 ### 修复：Shopify CSV 导入兼容，并将描述图统一切到 imgbb
