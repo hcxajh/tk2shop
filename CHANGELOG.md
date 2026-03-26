@@ -1,5 +1,107 @@
 # CHANGELOG - tk2shop
 
+## v0.3.31 (2026-03-27)
+
+### 修复：CSV 残留原始标题字段，并统一评论模板使用发布标题
+
+**本轮修复内容：**
+- `scripts/publisher/to-csv.js` 已修正 CSV 首行 `Image alt text` 的来源：
+  - 之前仍使用原始 `product.title`
+  - 现在改为优先使用 `product.shopifyContent.title`
+- `scripts/publisher/enrich-product.js` 已修正评论模板文案生成来源：
+  - 评论模板不再继续吃原始长标题
+  - 现在优先基于发布标题 `shopifyContent.title` 生成评论内容
+- 本次修复目标是清理“主字段已切到 Shopify 文案，但残留列仍带原始 TikTok 标题”的问题
+
+**测试补充：**
+- `scripts/publisher/__tests__/to-csv.test.js`
+  - 新增：校验 CSV 首行 `Image alt text` 使用新标题
+- `scripts/publisher/__tests__/enrich-product.test.js`
+  - 新增：校验评论模板内容基于新发布标题生成，而不是旧长标题
+
+**意义：**
+- CSV 不再出现 `Title` 已切换、但 `Image alt text` 仍残留旧标题的混杂状态
+- 模板评论素材也与发布标题保持一致，减少后台中旧标题残留痕迹
+
+## v0.3.30 (2026-03-27)
+
+### 调整：enrich 阶段改为直接生成 Shopify 发布用标题与介绍
+
+**本轮调整内容：**
+- `scripts/publisher/enrich-product.js` 的发布用文案生成逻辑从通用“轻清洗”收口为更直接的 Shopify 化改写：
+  - 只写入 `shopifyContent.title`
+  - 只写入 `shopifyContent.descriptionHtml`
+  - 只写入 `shopifyContent.descriptionText`
+- 保持原始采集字段不动：
+  - 原 `title` 保留
+  - 原 `description` 保留
+  - 原 `descriptionBlocks` 保留
+- 标题改写策略调整为：
+  - 去除 TikTok / 平台味冗余词
+  - 聚合核心品类与主要卖点
+  - 输出更适合 Shopify 商品页的标题结构
+- 介绍改写策略调整为：
+  - 保持 `descriptionBlocks` 顺序不变
+  - 保持图片区块位置和顺序不变
+  - 仅替换 `text` block 的发布用表达
+  - 使用更明确的商品页英文文案，而不是只做轻度清洗
+- `contentMeta.descriptionMode` 已更新为：
+  - `direct_rewrite`
+
+**测试与验证：**
+- 更新 `scripts/publisher/__tests__/enrich-product.test.js`
+- 保留 `scripts/publisher/__tests__/to-csv.test.js`
+- 本地测试通过：
+  - `PASS enrich-product tests`
+  - `PASS to-csv tests`
+- 已对样本目录 `/root/.openclaw/TKdown/2026-03-26/018` 直接写入新的发布用标题与介绍，并成功重生成 `product.csv`
+
+**意义：**
+- 发布链路不再只做“文字清洗”，而是直接产出一版更接近 Shopify 商品页的发布用标题与介绍
+- 在不动原始采集结果的前提下，把“源数据”和“发布数据”明确分层
+- 保持 CSV 主链路稳定，后续导入会继续优先使用 `shopifyContent.descriptionHtml`
+
+## v0.3.29 (2026-03-27)
+
+### 新增：enrich 阶段同步生成 Shopify 轻改版产品介绍，并由 CSV 优先导出
+
+**本轮新增内容：**
+- `scripts/publisher/enrich-product.js` 不再只生成 `shopifyContent.title`，现已同步生成：
+  - `shopifyContent.descriptionHtml`
+  - `shopifyContent.descriptionText`
+- 描述增强模式已从原来的 `disabled` 切到：
+  - `contentMeta.descriptionMode = 'light_rewrite'`
+- 轻改版描述遵循以下边界：
+  - 保留原 `descriptionBlocks` 块顺序
+  - 保留原图片区块位置，不重排图片
+  - 仅轻改文字内容，不凭空新增卖点或参数
+  - 全量去除 emoji
+  - 弱化 TikTok / 平台味表达，使文案更接近 Shopify 商品页风格
+- `scripts/publisher/to-csv.js` 新增描述导出优先级：
+  1. `product.shopifyContent.descriptionHtml`
+  2. `descriptionBlocks -> HTML`
+  3. 原 `description -> <br>`
+- 当前正式收口策略：
+  - 原 `descriptionBlocks` 保留，作为结构化原始素材
+  - 原 `description` 保留，作为回退输入源与排查对照基线
+  - 最终发布优先使用 enrich 阶段生成的 Shopify 版介绍
+
+**测试与验证：**
+- 新增本地测试：
+  - `scripts/publisher/__tests__/enrich-product.test.js`
+  - `scripts/publisher/__tests__/to-csv.test.js`
+- 已完成真实样本验证：
+  - 样本目录：`/root/.openclaw/TKdown/2026-03-26/016`
+  - enrich 后已生成 `shopifyContent.descriptionHtml`
+  - 新 HTML 中 emoji 已去除
+  - 图片顺序与文本块顺序保持不变
+  - `product.csv` 的 `Description` 已优先使用新 HTML 输出
+
+**意义：**
+- 商品介绍不再只有“格式适配”，现已正式进入“轻改版 Shopify 化内容”阶段
+- 在不打乱现有版式基础上，补齐了“标题已增强、描述未增强”的链路断点
+- 保留完整回退逻辑，避免介绍增强异常时影响 Shopify CSV 主链路
+
 ## v0.3.28 (2026-03-26)
 
 ### 新增：Theme Editor 评论模板自动填写并自动绑定商品模板

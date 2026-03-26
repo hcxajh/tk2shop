@@ -151,6 +151,16 @@ function renderDescriptionBlocksHtml(product, descriptionImageUrls = {}) {
   return parts.join('\n')
 }
 
+function getPreferredDescriptionHtml(product, descriptionImageUrls = {}) {
+  const enriched = String(product?.shopifyContent?.descriptionHtml || '').trim()
+  if (enriched) return enriched
+
+  const blocksDescriptionHtml = renderDescriptionBlocksHtml(product, descriptionImageUrls)
+  if (blocksDescriptionHtml) return blocksDescriptionHtml
+
+  return String(product?.description || '').replace(/\n/g, '<br>')
+}
+
 function toHandle(title) {
   if (!title) return ''
   return title.toLowerCase()
@@ -371,8 +381,7 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
   const variants = Array.isArray(product.variants) ? product.variants : []
   const hasMultipleVariants = variants.length > 1
   const exportTitle = product.shopifyContent?.title || product.title || ''
-  const blocksDescriptionHtml = renderDescriptionBlocksHtml(product, descriptionImageUrls)
-  const exportDescriptionHtml = blocksDescriptionHtml || String(product.description || '').replace(/\n/g, '<br>')
+  const exportDescriptionHtml = getPreferredDescriptionHtml(product, descriptionImageUrls)
   const productHandle = toHandle(exportTitle || product.title)
 
   const title = isFirstRow ? exportTitle : ''
@@ -398,7 +407,7 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
 
   const imageUrl = isFirstRow ? (mainImageUrl || '') : ''
   const imagePos = isFirstRow ? '1' : ''
-  const imageAlt = isFirstRow ? (product.title || '') : ''
+  const imageAlt = isFirstRow ? exportTitle : ''
   const variantImg = variantImageUrl || ''
 
   const inventoryTracker = 'shopify'
@@ -505,7 +514,16 @@ async function main() {
   log(`   CSV 行数: ${rows.length - 1}行（不含标题）`)
 }
 
-main().catch(err => {
-  console.error('❌ 错误:', err.message)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch(err => {
+    console.error('❌ 错误:', err.message)
+    process.exit(1)
+  })
+}
+
+module.exports = {
+  escapeHtml,
+  renderDescriptionBlocksHtml,
+  getPreferredDescriptionHtml,
+  generateRow,
+}
