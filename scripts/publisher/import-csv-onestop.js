@@ -253,7 +253,7 @@ function closeBrowser(profileNo) {
   });
 }
 
-function runPostImportThemeSetup(productDir, storeId) {
+function runPostImportThemeSetup(productDir, storeId, productId = '') {
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(POST_IMPORT_THEME_SETUP)) {
       return reject(new Error(`未找到 post-import-theme-setup.js: ${POST_IMPORT_THEME_SETUP}`));
@@ -261,6 +261,10 @@ function runPostImportThemeSetup(productDir, storeId) {
 
     log(`🎨 导入成功，继续执行模板收尾...`);
     const args = [POST_IMPORT_THEME_SETUP, '--store', storeId, '--product-dir', productDir];
+    if (productId) {
+      args.push('--product-id', String(productId));
+      log(`📦 本次导入商品ID: ${productId}`);
+    }
     const child = spawn('node', args, {
       cwd: path.dirname(POST_IMPORT_THEME_SETUP),
       stdio: 'inherit',
@@ -279,6 +283,7 @@ async function importToShopify(csvPath) {
   let browser = null;
   let cdpResult = null;
   let pg = null;
+  let importedProductId = '';
 
   try {
     cdpResult = await openBrowser(PROFILE_NO);
@@ -484,7 +489,18 @@ async function importToShopify(csvPath) {
 
     const finalUrl = pg.url();
     log(`   当前URL: ${finalUrl}`);
+
+    const productsText = (await pg.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ');
+    const importedMatch = productsText.match(/gid:\/\/shopify\/Product\/(\d+)\s+/);
+    if (importedMatch) {
+      importedProductId = importedMatch[1];
+      log(`🆔 已识别本次导入商品ID: ${importedProductId}`);
+    } else {
+      log('⚠️ 暂未从 Products 列表识别到本次导入商品ID');
+    }
+
     log(`✅ 导入完成`);
+    return { productId: importedProductId };
 
   } catch (e) {
     log(`❌ 导入失败: ${e.message}`);
@@ -590,10 +606,10 @@ async function main() {
 
   // Step 2: 浏览器导入
   log(`📤 本次导入文件: ${csvToImport}`);
-  await importToShopify(csvToImport);
+  const importResult = await importToShopify(csvToImport);
 
   // Step 3: 导入后模板收尾
-  await runPostImportThemeSetup(productDir, store.storeId || store.name || SHOPIFY_SLUG);
+  await runPostImportThemeSetup(productDir, store.storeId || store.name || SHOPIFY_SLUG, importResult?.productId || '');
 }
 
 main().catch(e => { console.error(`❌ 错误: ${e.message}`); process.exit(1); });

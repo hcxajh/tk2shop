@@ -887,7 +887,33 @@
 
 ---
 
-## v0.1.0 (2026-03-22)
+## v0.3.29 (2026-03-26)
+
+### 加固：发布总入口后半段稳定性
+
+**导入后商品识别链路（已修通）：**
+- `import-csv-onestop.js` 导入完成后，会从 Shopify Products 列表中提取本次新导入商品 ID
+- 提取结果已接入并传递给 `post-import-theme-setup.js`
+- `post-import-theme-setup.js` 新增 `--product-id` 参数，绑定模板时优先使用明确的 Shopify 商品 ID，不再回落到历史商品
+
+**AdsPower / CDP 恢复（已加固）：**
+- 修复导入结束后复用失效 `ws://...` 触发 `ECONNREFUSED` 直接失败的问题
+- 新增 CDP 健康校验：拿到候选 ws 后先测试 `connectOverCDP`，通过后再进入正式流程
+- 若候选 ws 不可用，会自动等待并重试，避免 `open-browser` 短时间返回旧失效地址时误判成功
+
+**Shopify Themes / Theme Editor（已加固）：**
+- `openEditorAndGetFrame()` 已兼容 `Your connection needs to be verified before you can proceed` 验证页，命中后继续等待自动放行
+- Themes 页主体 iframe 识别已从“只看 URL”扩展为“URL + frame 文本 + empty-url/延迟挂载 iframe”联合判定
+- 修复进入 `https://admin.shopify.com/store/<slug>/themes` 后 frame URL 为空、但主体已加载时无法识别的问题
+
+**真实回归：**
+- 新样本：`/root/.openclaw/TKdown/2026-03-26/012`
+- TikTok 商品 ID：`1731331424713282252`
+- Shopify 新商品 ID：`9160389263582`
+- 本轮模板：`20260326184712`
+- 真实结果：已完成“采集 → CSV → Shopify 导入 → 识别本次新商品 → Theme Editor 填 3 条评论 → 保存模板 → 绑定到新商品”完整闭环
+- 最终绑定成功：商品 `9160389263582` → 模板 `20260326184712`
+
 
 - tk2shop-agent 子代理技能创建
 - 商品采集流程完成（9主图+2描述图+4 SKU）

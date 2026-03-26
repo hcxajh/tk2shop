@@ -32,6 +32,7 @@ function parseArgs(argv) {
     storeQuery: '',
     productDir: '',
     templateName: '',
+    productId: '',
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -39,13 +40,14 @@ function parseArgs(argv) {
     if (cur === '--store' && args[i + 1]) out.storeQuery = args[++i];
     else if (cur === '--product-dir' && args[i + 1]) out.productDir = args[++i];
     else if (cur === '--template-name' && args[i + 1]) out.templateName = args[++i];
+    else if (cur === '--product-id' && args[i + 1]) out.productId = args[++i];
     else if (cur === '--help' || cur === '-h') out.help = true;
   }
   return out;
 }
 
 function printHelp() {
-  console.log(`用法:\n  node post-import-theme-setup.js --store <店铺ID> [--product-dir <商品目录>] [--template-name <模板名>]`);
+  console.log(`用法:\n  node post-import-theme-setup.js --store <店铺ID> [--product-dir <商品目录>] [--template-name <模板名>] [--product-id <Shopify商品ID>]`);
 }
 
 function loadStores() {
@@ -157,39 +159,61 @@ function isProfileActive(profileNo) {
   return Boolean(getActiveBrowser(profileNo));
 }
 
-function openBrowser(profileNo) {
-  return new Promise((resolve, reject) => {
-    const activeBrowser = getActiveBrowser(profileNo);
-    if (activeBrowser) {
-      log(`🔁 检测到 profile ${profileNo} 已有活跃浏览器，优先复用当前实例...`);
-      if (activeBrowser.cdpUrl && activeBrowser.cdpUrl.startsWith('ws')) {
-        log(`🔌 复用已有 CDP: ${activeBrowser.cdpUrl}`);
-        return resolve({ cdpUrl: activeBrowser.cdpUrl, isNew: false });
+async function resolveHealthyCdp(profileNo, preferNew = false) {
+  const maxAttempts = preferNew ? 4 : 2;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let candidate = null;
+
+    if (!preferNew) {
+      const activeBrowser = getActiveBrowser(profileNo);
+      if (activeBrowser?.cdpUrl && activeBrowser.cdpUrl.startsWith('ws')) {
+        candidate = { cdpUrl: activeBrowser.cdpUrl, isNew: false };
+        log(`🔌 尝试复用 CDP (${attempt}/${maxAttempts}): ${candidate.cdpUrl}`);
       }
-      log(`⚠️ 已检测到活跃浏览器，但未拿到可用 ws 地址；debug_port=${activeBrowser.debugPort || '无'}，改为新开浏览器`);
-    } else {
-      log(`ℹ️ 未检测到 profile ${profileNo} 的活跃浏览器，准备新开实例`);
     }
 
-    log(`🔓 打开 AdsPower 浏览器 (profileNo: ${profileNo})...`);
-    const jsonArg = JSON.stringify({ profileNo: String(profileNo) });
-    const p = spawn('npx', ['--yes', 'adspower-browser', 'open-browser', jsonArg], { timeout: 90000 });
-    let out = '';
-    p.stdout.on('data', d => out += d);
-    p.stderr.on('data', d => out += d);
-    p.on('close', code => {
-      if (code !== 0) {
-        return reject(new Error('open-browser 失败: ' + out.slice(0, 300)));
+    if (!candidate) {
+      if (attempt > 1 || preferNew) {
+        log(`🔓 打开 AdsPower 浏览器以刷新 CDP (${attempt}/${maxAttempts})...`);
       }
-      const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
-      if (!match) {
-        return reject(new Error('无法获取 CDP URL: ' + out.slice(0, 300)));
-      }
-      log(`🔌 CDP: ${match[1]}`);
-      resolve({ cdpUrl: match[1], isNew: true });
-    });
-    p.on('error', reject);
-  });
+      const opened = await new Promise((resolve, reject) => {
+        const jsonArg = JSON.stringify({ profileNo: String(profileNo) });
+        const p = spawn('npx', ['--yes', 'adspower-browser', 'open-browser', jsonArg], { timeout: 90000 });
+        let out = '';
+        p.stdout.on('data', d => out += d);
+        p.stderr.on('data', d => out += d);
+        p.on('close', code => {
+          if (code !== 0) {
+            return reject(new Error('open-browser 失败: ' + out.slice(0, 300)));
+          }
+          const match = out.match(/ws\.puppeteer:\s*(ws:\/\/[^\s]+)/);
+          if (!match) {
+            return reject(new Error('无法获取 CDP URL: ' + out.slice(0, 300)));
+          }
+          resolve({ cdpUrl: match[1], isNew: true });
+        });
+        p.on('error', reject);
+      });
+      candidate = opened;
+      log(`🔌 候选 CDP (${attempt}/${maxAttempts}): ${candidate.cdpUrl}`);
+    }
+
+    try {
+      const testBrowser = await chromium.connectOverCDP(candidate.cdpUrl);
+      try { await testBrowser.disconnect(); } catch (e) {}
+      return candidate;
+    } catch (err) {
+      log(`⚠️ CDP 不可用 (${attempt}/${maxAttempts}): ${String(err.message || err).split('\n')[0]}`);
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
+
+  throw new Error(`未拿到可用的 AdsPower CDP（profileNo=${profileNo}）`);
+}
+
+function openBrowser(profileNo) {
+  return resolveHealthyCdp(profileNo, false);
 }
 
 function closeBrowser(profileNo) {
@@ -235,6 +259,23 @@ async function getVisibleFrameByUrl(page, matcher) {
         if (await body.count()) return frame;
       } catch (e) {}
     }
+  }
+  return null;
+}
+
+async function getThemeAppFrame(page) {
+  const frames = page.frames();
+  for (const frame of frames) {
+    try {
+      const url = frame.url() || '';
+      const text = (await frame.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+      if (
+        /online-store-web\.shopifyapps\.com\/themes/i.test(url)
+        || /Current theme|Theme library|Customize|Edit code|Add theme|Theme actions/i.test(text)
+      ) {
+        return frame;
+      }
+    } catch (e) {}
   }
   return null;
 }
@@ -318,12 +359,20 @@ async function gotoThemesAndGetEditorUrl(page, slug) {
   await waitForThemePageReady(page, 45000);
   await page.waitForTimeout(5000);
 
-  let frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes/.test(url));
+  let frame = null;
+  for (let i = 0; i < 8 && !frame; i++) {
+    frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes/.test(url));
+    if (!frame) frame = await getThemeAppFrame(page);
+    if (!frame && i === 2) {
+      await logThemesDebug(page);
+    }
+    if (!frame) {
+      await page.waitForTimeout(2000);
+    }
+  }
+
   if (!frame) {
     await logThemesDebug(page);
-    frame = await getVisibleFrameByUrl(page, url => /shopifyapps\.com/.test(url));
-  }
-  if (!frame) {
     throw new Error('未找到 Shopify Themes 主体 iframe');
   }
 
@@ -344,32 +393,45 @@ async function gotoThemesAndGetEditorUrl(page, slug) {
 async function openEditorAndGetFrame(page, editorUrl) {
   log('🚀 打开 Theme Editor...');
   await page.goto(editorUrl, { timeout: 60000, waitUntil: 'domcontentloaded' });
-  await waitForEditorReady(page, 60000);
-  await page.waitForTimeout(8000);
 
-  let frame = null;
-  const editorIframe = page.locator('iframe._Frame_1vogr_1[title="Online Store"]').first();
-  if (await editorIframe.count().catch(() => 0)) {
-    frame = await editorIframe.contentFrame();
+  const started = Date.now();
+  const maxWaitMs = 120000;
+  while (Date.now() - started < maxWaitMs) {
+    const bodyText = (await page.locator('body').innerText().catch(() => '')).replace(/\s+/g, ' ').trim();
+    if (/Your connection needs to be verified before you can proceed/i.test(bodyText)) {
+      log('⏳ Theme Editor 命中验证页，继续等待自动放行...');
+      await page.waitForTimeout(5000);
+      continue;
+    }
+
+    await waitForEditorReady(page, 10000).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    let frame = null;
+    const editorIframe = page.locator('iframe._Frame_1vogr_1[title="Online Store"]').first();
+    if (await editorIframe.count().catch(() => 0)) {
+      frame = await editorIframe.contentFrame();
+    }
+
+    if (!frame) {
+      frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes\/.+\/editor/.test(url));
+    }
+    if (!frame) {
+      frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes\/.*/.test(url));
+    }
+    if (!frame) {
+      frame = await getVisibleFrameByUrl(page, url => /shopifyapps\.com/.test(url));
+    }
+    if (frame) {
+      log('✅ 已进入 Theme Editor 主体 iframe');
+      return frame;
+    }
+
+    await page.waitForTimeout(3000);
   }
 
-  if (!frame) {
-    frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes\/.+\/editor/.test(url));
-  }
-  if (!frame) {
-    await logEditorDebug(page);
-    frame = await getVisibleFrameByUrl(page, url => /online-store-web\.shopifyapps\.com\/themes\/.*/.test(url));
-  }
-  if (!frame) {
-    await logEditorDebug(page);
-    frame = await getVisibleFrameByUrl(page, url => /shopifyapps\.com/.test(url));
-  }
-  if (!frame) {
-    throw new Error('未找到 Theme Editor 主体 iframe');
-  }
-
-  log('✅ 已进入 Theme Editor 主体 iframe');
-  return frame;
+  await logEditorDebug(page);
+  throw new Error('未找到 Theme Editor 主体 iframe');
 }
 
 async function switchToProductAndCreateTemplate(frame, page, templateName) {
@@ -516,11 +578,12 @@ async function saveTemplate(frame, page) {
   }
 }
 
-function getProductAdminUrl(store, reviewAssets) {
+function getProductAdminUrl(store, reviewAssets, argv = {}) {
+  const explicitArg = String(argv?.productId || '').trim();
   const explicit = String(store.lastImportedProductId || store.productId || '').trim();
   const fromMeta = String(reviewAssets?.product?._shopify?.productId || reviewAssets?.product?.shopifyProductId || '').trim();
   const fromMemory = String(reviewAssets?.product?.contentMeta?.shopifyProductId || '').trim();
-  const productId = explicit || fromMeta || fromMemory || '9159876346078';
+  const productId = explicitArg || explicit || fromMeta || fromMemory || '9159876346078';
   return `https://admin.shopify.com/store/${store.shopifySlug || store.storeId || store.name}/products/${productId}`;
 }
 
@@ -674,6 +737,7 @@ async function main() {
   try {
     cdpResult = await openBrowser(profileNo);
     browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
+
     const context = browser.contexts()[0];
     if (!context) throw new Error('未获取到浏览器 context');
 
@@ -711,7 +775,7 @@ async function main() {
     }
 
     await exitEditor(editorFrame, page);
-    const productAdminUrl = getProductAdminUrl(store, reviewAssets);
+    const productAdminUrl = getProductAdminUrl(store, reviewAssets, argv);
     log(`📦 进入商品编辑页: ${productAdminUrl}`);
     await page.goto(productAdminUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     const ready = await waitForProductEditorReady(page, 60000);
