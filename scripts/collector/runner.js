@@ -501,7 +501,7 @@ async function extract(browser, page, tiktokUrl) {
   log(`📝 查看更多: ${moreBtnClicked ? '✅ ' + moreBtnClicked : '⚠️'}`);
 
   const descResult = await page.evaluate(() => {
-    const result = { text: '', images: [] };
+    const result = { text: '', images: [], blocks: [], debug: { headers: [], candidates: [], selected: null } };
     const stopKeys = [
       'View more', 'See more', 'Videos for this product', 'About this shop', 'Shop review',
       'You may also like', 'People also searched for', 'Shipping & returns', 'Shipping & delivery',
@@ -519,6 +519,7 @@ async function extract(browser, page, tiktokUrl) {
     const detailTitleRe = /^Details$/i;
 
     const normalizeLines = (text) => (text || '').split('\n').map(s => s.trim()).filter(Boolean);
+    const previewText = (text, max = 160) => String(text || '').replace(/\s+/g, ' ').trim().slice(0, max);
 
     const isDirtyBlock = (text) => {
       if (!text) return true;
@@ -552,6 +553,11 @@ async function extract(browser, page, tiktokUrl) {
           break;
         }
 
+        if (mode === 'desc' && /^Sensitive Goods Type\b/i.test(line)) {
+          if (kept.length === 0) continue;
+          break;
+        }
+
         kept.push(line);
       }
 
@@ -560,18 +566,164 @@ async function extract(browser, page, tiktokUrl) {
       return joined;
     };
 
+    const normalizeImageUrl = (src) => src || '';
+
+    const isUsefulImage = (img, src) => {
+      if (!src || !src.includes('ttcdn')) return false;
+      if (src.includes('favicon') || src.includes('logo') || src.includes('tts_logo')) return false;
+      const rect = typeof img.getBoundingClientRect === 'function' ? img.getBoundingClientRect() : { width: 0, height: 0 };
+      const width = Number(img.naturalWidth || img.width || rect.width || 0);
+      const height = Number(img.naturalHeight || img.height || rect.height || 0);
+      if (width > 0 && height > 0 && width < 40 && height < 40) return false;
+      return true;
+    };
+
     const collectImages = (targetDiv) => {
       const images = [];
       if (!targetDiv) return images;
       const imgs = targetDiv.querySelectorAll('img');
       for (const img of imgs) {
-        if (img.naturalWidth < 50) continue;
-        const src = img.currentSrc || img.src;
-        if (src && !src.includes('favicon') && !src.includes('logo') && !src.includes('tts_logo') && src.includes('ttcdn')) {
-          images.push(src);
-        }
+        const src = normalizeImageUrl(img.currentSrc || img.src || img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-lazy-src'));
+        if (isUsefulImage(img, src)) images.push(src);
       }
       return [...new Set(images)];
+    };
+
+    const extractBlocksFromContainer = (container) => {
+      if (!container) return [];
+      const blocks = [];
+      const seenImages = new Set();
+      const seenTexts = new Set();
+
+      const pushText = (text) => {
+        const cleaned = sanitizeText(text, 'desc');
+        if (!cleaned) return;
+        const key = cleaned.replace(/\s+/g, ' ').trim();
+        if (!key || seenTexts.has(key)) return;
+        seenTexts.add(key);
+        blocks.push({ type: 'text', text: cleaned });
+      };
+
+      const pushImage = (img) => {
+        const src = normalizeImageUrl(img.currentSrc || img.src || img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-lazy-src'));
+        if (!isUsefulImage(img, src)) return;
+        if (seenImages.has(src)) return;
+        seenImages.add(src);
+        blocks.push({ type: 'image', src });
+      };
+
+      const isLeafLikeTextNode = (node) => {
+        const children = Array.from(node.children || []);
+        if (children.length === 0) return true;
+        const hasBlockChildren = children.some(child => {
+          const tag = (child.tagName || '').toLowerCase();
+          return ['div', 'section', 'article', 'ul', 'ol', 'li', 'p'].includes(tag);
+        });
+        return !hasBlockChildren;
+      };
+
+      const walk = (node, depth = 0) => {
+        if (!node || node.nodeType !== 1) return;
+        const el = node;
+        const tag = (el.tagName || '').toLowerCase();
+        const nodeText = (el.innerText || '').trim();
+
+        if (tag === 'img') {
+          pushImage(el);
+          return;
+        }
+
+        if (['script', 'style', 'svg'].includes(tag)) return;
+        if (descTitleRe.test(nodeText) || detailTitleRe.test(nodeText)) return;
+        if (isDirtyBlock(nodeText) && !el.querySelector('img')) return;
+
+        const directChildren = Array.from(el.children || []);
+        if (directChildren.length === 0) {
+          pushText(nodeText);
+          return;
+        }
+
+        if (depth <= 2) {
+          const directSequence = [];
+          for (const child of directChildren) {
+            const childTag = (child.tagName || '').toLowerCase();
+            const childText = (child.innerText || '').trim();
+            if (childTag === 'img') {
+              const src = normalizeImageUrl(child.currentSrc || child.src || child.getAttribute('src') || child.getAttribute('data-src') || child.getAttribute('data-lazy-src'));
+              if (isUsefulImage(child, src)) directSequence.push({ type: 'image', src });
+              continue;
+            }
+            const cleanedChildText = sanitizeText(childText, 'desc');
+            if (cleanedChildText) directSequence.push({ type: 'text', text: cleanedChildText });
+          }
+
+          const hasMixedSequence = directSequence.some(x => x.type === 'text') && directSequence.some(x => x.type === 'image');
+          if (hasMixedSequence) {
+            for (const item of directSequence) {
+              if (item.type === 'image') {
+                if (!seenImages.has(item.src)) {
+                  seenImages.add(item.src);
+                  blocks.push(item);
+                }
+              } else {
+                const key = item.text.replace(/\s+/g, ' ').trim();
+                if (key && !seenTexts.has(key)) {
+                  seenTexts.add(key);
+                  blocks.push(item);
+                }
+              }
+            }
+            return;
+          }
+        }
+
+        if (tag === 'p' || tag === 'li' || isLeafLikeTextNode(el)) {
+          const hasUsefulImgChild = directChildren.some(child => (child.tagName || '').toLowerCase() === 'img');
+          if (!hasUsefulImgChild) {
+            pushText(nodeText);
+            return;
+          }
+        }
+
+        for (const child of directChildren) {
+          walk(child, depth + 1);
+        }
+
+        const childTextConcat = directChildren.map(child => (child.innerText || '').trim()).filter(Boolean).join('\n');
+        const ownText = nodeText && childTextConcat ? nodeText.replace(childTextConcat, '').trim() : nodeText;
+        if (ownText && ownText.length > 1 && !descTitleRe.test(ownText) && !detailTitleRe.test(ownText)) {
+          pushText(ownText);
+        }
+      };
+
+      walk(container, 0);
+      return blocks;
+    };
+
+    const describeNode = (el, label) => {
+      if (!el) return null;
+      const rawText = (el.innerText || '').trim();
+      const cleaned = sanitizeText(rawText, 'desc');
+      const images = collectImages(el);
+      const blocks = extractBlocksFromContainer(el);
+      const dirtyHitCount = dirtyKeys.filter(k => rawText.includes(k)).length;
+      return {
+        label,
+        tag: (el.tagName || '').toLowerCase(),
+        className: String(el.className || '').slice(0, 200),
+        textLen: rawText.length,
+        cleanedLen: cleaned.length,
+        imageCount: images.length,
+        childCount: el.children ? el.children.length : 0,
+        dirtyHitCount,
+        preview: previewText(rawText),
+        blocksPreview: blocks.slice(0, 8).map(b => b.type === 'text'
+          ? { type: 'text', text: previewText(b.text, 120) }
+          : { type: 'image', src: previewText(b.src, 120) }),
+        images,
+        cleaned,
+        blocks,
+      };
     };
 
     const sectionCandidates = [];
@@ -586,21 +738,54 @@ async function extract(browser, page, tiktokUrl) {
       const mode = descTitleRe.test(headerText) ? 'desc' : (detailTitleRe.test(headerText) ? 'detail' : 'other');
       if (mode === 'other') continue;
 
-      const candidates = [
-        header.nextElementSibling,
-        header.parentElement?.nextElementSibling,
-        header.parentElement?.querySelector(':scope > div:last-child'),
-        header.parentElement,
-      ].filter(Boolean);
+      const headerInfo = {
+        text: headerText,
+        mode,
+        preview: previewText(headerText),
+        candidates: []
+      };
 
-      for (const el of candidates) {
-        const rawText = (el.innerText || '').trim();
-        if (!rawText || isDirtyBlock(rawText)) continue;
-        const text = sanitizeText(rawText, mode);
-        if (!text) continue;
-        const images = collectImages(el);
-        sectionCandidates.push({ mode, text, images, score: text.length + images.length * 200 });
+      const candidates = [
+        ['next', header.nextElementSibling],
+        ['parent-next', header.parentElement?.nextElementSibling],
+        ['parent-last-child', header.parentElement?.querySelector(':scope > div:last-child')],
+        ['parent', header.parentElement],
+        ['parent-parent-next', header.parentElement?.parentElement?.nextElementSibling],
+        ['parent-parent', header.parentElement?.parentElement],
+      ].filter(([, el]) => Boolean(el));
+
+      for (const [label, el] of candidates) {
+        const info = describeNode(el, label);
+        if (!info) continue;
+        headerInfo.candidates.push({
+          label: info.label,
+          textLen: info.textLen,
+          cleanedLen: info.cleanedLen,
+          imageCount: info.imageCount,
+          childCount: info.childCount,
+          dirtyHitCount: info.dirtyHitCount,
+          preview: info.preview,
+          blocksPreview: info.blocksPreview,
+        });
+
+        if (!info.cleaned || isDirtyBlock((el.innerText || '').trim())) continue;
+        const penalty = (
+          (label.includes('parent-parent') ? 220 : 0) +
+          (mode === 'desc' && /^Details\b/i.test(info.preview) ? 260 : 0) +
+          (mode === 'desc' && /Plug Type|Quantity Per Pack|Sensitive Goods Type|Product Contain Wooden Materials/i.test(info.preview) ? 320 : 0)
+        );
+        sectionCandidates.push({
+          mode,
+          label,
+          text: info.cleaned,
+          images: info.images,
+          blocks: info.blocks,
+          score: info.cleaned.length + info.images.length * 200 + info.blocks.length * 20 - penalty,
+          preview: info.preview,
+        });
       }
+
+      result.debug.headers.push(headerInfo);
     }
 
     const descOnly = sectionCandidates.filter(x => x.mode === 'desc' && x.text && x.text.length >= 20 && x.text.length < 2500);
@@ -608,6 +793,24 @@ async function extract(browser, page, tiktokUrl) {
       descOnly.sort((a, b) => b.score - a.score);
       result.text = descOnly[0].text;
       result.images = descOnly[0].images;
+      result.blocks = descOnly[0].blocks || [];
+      result.debug.selected = {
+        source: 'descOnly',
+        label: descOnly[0].label,
+        score: descOnly[0].score,
+        preview: descOnly[0].preview,
+        textLen: descOnly[0].text.length,
+        imageCount: descOnly[0].images.length,
+        blockCount: (descOnly[0].blocks || []).length,
+      };
+      result.debug.candidates = descOnly.slice(0, 8).map(x => ({
+        label: x.label,
+        score: x.score,
+        textLen: x.text.length,
+        imageCount: x.images.length,
+        blockCount: (x.blocks || []).length,
+        preview: x.preview,
+      }));
       return result;
     }
 
@@ -617,19 +820,21 @@ async function extract(browser, page, tiktokUrl) {
       if (!descTitleRe.test(headerText)) continue;
 
       const nearby = [
-        header.nextElementSibling,
-        header.parentElement?.nextElementSibling,
-      ].filter(Boolean);
+        ['next', header.nextElementSibling],
+        ['parent-next', header.parentElement?.nextElementSibling],
+        ['parent-parent-next', header.parentElement?.parentElement?.nextElementSibling],
+      ].filter(([, el]) => Boolean(el));
 
-      for (const el of nearby) {
-        const rawText = (el.innerText || '').trim();
-        if (!rawText || isDirtyBlock(rawText)) continue;
-        const cleaned = sanitizeText(rawText, 'desc');
-        if (!cleaned) continue;
+      for (const [label, el] of nearby) {
+        const info = describeNode(el, `fallback-${label}`);
+        if (!info || !info.cleaned) continue;
         narrowFallbackCandidates.push({
-          text: cleaned,
-          images: collectImages(el),
-          score: cleaned.length + collectImages(el).length * 200,
+          label: info.label,
+          text: info.cleaned,
+          images: info.images,
+          blocks: info.blocks,
+          score: info.cleaned.length + info.images.length * 200 + info.blocks.length * 20,
+          preview: info.preview,
         });
       }
     }
@@ -638,6 +843,24 @@ async function extract(browser, page, tiktokUrl) {
       narrowFallbackCandidates.sort((a, b) => b.score - a.score);
       result.text = narrowFallbackCandidates[0].text;
       result.images = narrowFallbackCandidates[0].images;
+      result.blocks = narrowFallbackCandidates[0].blocks || [];
+      result.debug.selected = {
+        source: 'fallback',
+        label: narrowFallbackCandidates[0].label,
+        score: narrowFallbackCandidates[0].score,
+        preview: narrowFallbackCandidates[0].preview,
+        textLen: narrowFallbackCandidates[0].text.length,
+        imageCount: narrowFallbackCandidates[0].images.length,
+        blockCount: (narrowFallbackCandidates[0].blocks || []).length,
+      };
+      result.debug.candidates = narrowFallbackCandidates.slice(0, 8).map(x => ({
+        label: x.label,
+        score: x.score,
+        textLen: x.text.length,
+        imageCount: x.images.length,
+        blockCount: (x.blocks || []).length,
+        preview: x.preview,
+      }));
     }
 
     return result;
@@ -793,6 +1016,7 @@ async function main() {
       status: 'active',
       images: allImages,
       descriptionImages: descImages,
+      descriptionBlocks: data.descResult.blocks || [],
       options: data.selectedOptions || [],
       variants: normalizedVariants,
       _meta: {
