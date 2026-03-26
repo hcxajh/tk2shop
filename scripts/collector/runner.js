@@ -508,11 +508,25 @@ async function extract(browser, page, tiktokUrl) {
       'Returns made easy', 'TikTok Shop protections', 'Secure payments', 'Data privacy',
       'Money-back guarantee', 'Delivery guarantee', '24/7 in-app support', 'Easy returns and refunds'
     ];
+    const dirtyKeys = [
+      'Log in', 'Coupon Center', 'Get app', 'Verified purchase', 'global reviews',
+      'Ships within', 'Positive feedback', 'Visit', 'Creator earns commission',
+      'Explore more from', 'You may also like', 'People also searched for',
+      'Shipping & returns', 'About this shop', 'Shop review'
+    ];
     const specKeys = /^(Plug Type|Region Of Origin|Pack Type|Net Weight|Quantity Per Pack|Makeup Tool Type|Material|Style|Size|Model|Applicable Age Group|Major Material|Power Supply|Battery Properties|Brand|Origin|Item ID)\b/i;
     const descTitleRe = /^(Product description|Description|About this product)$/i;
     const detailTitleRe = /^Details$/i;
 
     const normalizeLines = (text) => (text || '').split('\n').map(s => s.trim()).filter(Boolean);
+
+    const isDirtyBlock = (text) => {
+      if (!text) return true;
+      const hitCount = dirtyKeys.filter(k => text.includes(k)).length;
+      if (hitCount >= 2) return true;
+      if (text.length > 5000) return true;
+      return false;
+    };
 
     const sanitizeText = (text, mode = 'desc') => {
       const lines = normalizeLines(text);
@@ -526,6 +540,7 @@ async function extract(browser, page, tiktokUrl) {
       for (let i = start; i < lines.length; i++) {
         const line = lines[i];
         if (stopKeys.some(k => line.includes(k))) break;
+        if (dirtyKeys.some(k => line.includes(k))) break;
         if (descTitleRe.test(line) || detailTitleRe.test(line)) continue;
         if (/^\d+(\.\d+)?$/.test(line)) continue;
         if (/^\$?\d+[\d.,]*$/.test(line)) continue;
@@ -540,7 +555,9 @@ async function extract(browser, page, tiktokUrl) {
         kept.push(line);
       }
 
-      return kept.join('\n').trim();
+      const joined = kept.join('\n').trim();
+      if (!joined || isDirtyBlock(joined)) return '';
+      return joined;
     };
 
     const collectImages = (targetDiv) => {
@@ -572,19 +589,21 @@ async function extract(browser, page, tiktokUrl) {
       const candidates = [
         header.nextElementSibling,
         header.parentElement?.nextElementSibling,
+        header.parentElement?.querySelector(':scope > div:last-child'),
         header.parentElement,
-        header.parentElement?.parentElement,
-        header.closest('div')
       ].filter(Boolean);
 
       for (const el of candidates) {
-        const text = sanitizeText(el.innerText || '', mode);
+        const rawText = (el.innerText || '').trim();
+        if (!rawText || isDirtyBlock(rawText)) continue;
+        const text = sanitizeText(rawText, mode);
+        if (!text) continue;
         const images = collectImages(el);
         sectionCandidates.push({ mode, text, images, score: text.length + images.length * 200 });
       }
     }
 
-    const descOnly = sectionCandidates.filter(x => x.mode === 'desc' && x.text && x.text.length < 4000);
+    const descOnly = sectionCandidates.filter(x => x.mode === 'desc' && x.text && x.text.length >= 20 && x.text.length < 2500);
     if (descOnly.length > 0) {
       descOnly.sort((a, b) => b.score - a.score);
       result.text = descOnly[0].text;
@@ -592,25 +611,33 @@ async function extract(browser, page, tiktokUrl) {
       return result;
     }
 
-    const fallbackCandidates = [];
-    for (const div of document.querySelectorAll('div')) {
-      const text = (div.innerText || '').trim();
-      if (!text || text.length < 80) continue;
-      if (text.includes('Product description') || text.includes('About this product') || text.includes('Description')) {
-        const cleaned = sanitizeText(text, 'desc');
+    const narrowFallbackCandidates = [];
+    for (const header of Array.from(document.querySelectorAll('div,span,button'))) {
+      const headerText = (header.innerText || '').trim();
+      if (!descTitleRe.test(headerText)) continue;
+
+      const nearby = [
+        header.nextElementSibling,
+        header.parentElement?.nextElementSibling,
+      ].filter(Boolean);
+
+      for (const el of nearby) {
+        const rawText = (el.innerText || '').trim();
+        if (!rawText || isDirtyBlock(rawText)) continue;
+        const cleaned = sanitizeText(rawText, 'desc');
         if (!cleaned) continue;
-        fallbackCandidates.push({
+        narrowFallbackCandidates.push({
           text: cleaned,
-          images: collectImages(div),
-          score: cleaned.length + collectImages(div).length * 200,
+          images: collectImages(el),
+          score: cleaned.length + collectImages(el).length * 200,
         });
       }
     }
 
-    if (fallbackCandidates.length > 0) {
-      fallbackCandidates.sort((a, b) => b.score - a.score);
-      result.text = fallbackCandidates[0].text;
-      result.images = fallbackCandidates[0].images;
+    if (narrowFallbackCandidates.length > 0) {
+      narrowFallbackCandidates.sort((a, b) => b.score - a.score);
+      result.text = narrowFallbackCandidates[0].text;
+      result.images = narrowFallbackCandidates[0].images;
     }
 
     return result;
@@ -777,6 +804,15 @@ async function main() {
       }
     };
     fs.writeFileSync(path.join(outDir, 'product.json'), JSON.stringify(product, null, 2));
+
+    // 8b. 自动增强 Shopify 内容（失败不阻断主采集链路）
+    try {
+      const enrichScript = path.join(__dirname, '..', 'publisher', 'enrich-product.js');
+      execSync(`node "${enrichScript}" "${outDir}"`, { stdio: 'inherit', timeout: 30000 });
+      log('✨ 已自动完成内容增强');
+    } catch (e) {
+      log(`⚠️ 自动内容增强失败（已跳过，不影响采集结果）: ${e.message}`);
+    }
 
     // 9. 关闭新建的Tab
     await pg.close().catch(() => {});

@@ -305,7 +305,7 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
   const variants = Array.isArray(product.variants) ? product.variants : []
   const hasMultipleVariants = variants.length > 1
   const exportTitle = product.shopifyContent?.title || product.title || ''
-  const exportDescriptionHtml = product.shopifyContent?.descriptionHtml || String(product.description || '').replace(/\n/g, '<br>')
+  const exportDescriptionHtml = String(product.description || '').replace(/\n/g, '<br>')
   const exportDescriptionText = product.description || ''
   const productHandle = toHandle(exportTitle || product.title)
 
