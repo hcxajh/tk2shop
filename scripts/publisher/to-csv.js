@@ -304,12 +304,15 @@ function buildOptionFields(product, variant) {
 function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow) {
   const variants = Array.isArray(product.variants) ? product.variants : []
   const hasMultipleVariants = variants.length > 1
-  const productHandle = toHandle(product.title)
+  const exportTitle = product.shopifyContent?.title || product.title || ''
+  const exportDescriptionHtml = product.shopifyContent?.descriptionHtml || String(product.description || '').replace(/\n/g, '<br>')
+  const exportDescriptionText = product.description || ''
+  const productHandle = toHandle(exportTitle || product.title)
 
-  const title = isFirstRow ? (product.title || '') : ''
+  const title = isFirstRow ? exportTitle : ''
   const handle = hasMultipleVariants ? productHandle : (isFirstRow ? productHandle : '')
-  const description = isFirstRow ? (product.description || '') : ''
-  const bodyHtml = isFirstRow ? String(product.description || '').replace(/\n/g, '<br>') : ''
+  const description = isFirstRow ? exportDescriptionText : ''
+  const bodyHtml = isFirstRow ? exportDescriptionHtml : ''
   const vendor = isFirstRow ? '' : ''
   const tags = isFirstRow ? '' : ''
   const status = 'Active'
