@@ -1,0 +1,19 @@
+{
+  "title": "Original product title",
+  "shopifyContent": {
+    "title": "Normalized Shopify Title",
+    "descriptionHtml": "<div><p>Original layout preserved.</p><img src=\"https://example.com/a.jpg\"></div>"
+  },
+  "templateAssets": {
+    "reviews": [
+      { "name": "Emily", "content": "Looks great and feels very practical for daily use." },
+      { "name": "Jason", "content": "Good quality and easy to use. Exactly what I needed." },
+      { "name": "Mia", "content": "Nice details, simple to use, and matches the description well." }
+    ]
+  },
+  "contentMeta": {
+    "version": "v1",
+    "descriptionMode": "preserve-layout",
+    "reviewsGenerated": true
+  }
+}
