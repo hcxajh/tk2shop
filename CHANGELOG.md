@@ -887,6 +887,35 @@
 
 ---
 
+## v0.3.30 (2026-03-26)
+
+### 新增：发布总入口脚本（A 方案）
+
+**新增脚本：**
+- `scripts/publisher/publish-product.js`
+
+**定位：**
+- 作为“已有商品目录 → CSV → Shopify 导入 → 模板收尾”的统一发布入口
+- 只做编排，不重复实现底层导出/导入/模板逻辑，避免链路分叉
+
+**当前能力：**
+- 校验商品目录与 `product.json`
+- 调用 `to-csv.js` 生成 `product.csv`
+- 调用 `import-csv-onestop.js` 执行 Shopify 导入
+- 由导入脚本继续串接 `post-import-theme-setup.js` 完成评论模板填写与商品模板绑定
+
+**CLI：**
+- `node publish-product.js <商品目录> --store <店铺ID>`
+- 可选参数：
+  - `--skip-csv`
+  - `--csv-only`
+  - `--help` / `-h`
+
+**验证：**
+- 已通过语法检查：`node --check scripts/publisher/publish-product.js`
+- 已通过帮助命令检查：`node scripts/publisher/publish-product.js --help`
+- 已在真实样本上作为正式发布入口完成闭环调用
+
 ## v0.3.29 (2026-03-26)
 
 ### 加固：发布总入口后半段稳定性
