@@ -118,6 +118,40 @@ function escapeCSV(str) {
   return s
 }
 
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function renderDescriptionBlocksHtml(product) {
+  const blocks = Array.isArray(product?.descriptionBlocks) ? product.descriptionBlocks : []
+  if (blocks.length === 0) return ''
+
+  const parts = []
+  for (const block of blocks) {
+    if (!block || typeof block !== 'object') continue
+
+    if (block.type === 'text') {
+      const text = String(block.text || '').trim()
+      if (!text) continue
+      parts.push(`<p>${escapeHtml(text)}</p>`)
+      continue
+    }
+
+    if (block.type === 'image') {
+      const src = String(block.src || '').trim()
+      if (!src) continue
+      parts.push(`<img src="${escapeHtml(src)}" alt="" style="max-width:100%;height:auto;display:block;">`)
+    }
+  }
+
+  return parts.join('\n')
+}
+
 function toHandle(title) {
   if (!title) return ''
   return title.toLowerCase()
@@ -305,7 +339,8 @@ function generateRow(product, variant, mainImageUrl, variantImageUrl, isFirstRow
   const variants = Array.isArray(product.variants) ? product.variants : []
   const hasMultipleVariants = variants.length > 1
   const exportTitle = product.shopifyContent?.title || product.title || ''
-  const exportDescriptionHtml = String(product.description || '').replace(/\n/g, '<br>')
+  const blocksDescriptionHtml = renderDescriptionBlocksHtml(product)
+  const exportDescriptionHtml = blocksDescriptionHtml || String(product.description || '').replace(/\n/g, '<br>')
   const exportDescriptionText = product.description || ''
   const productHandle = toHandle(exportTitle || product.title)
 

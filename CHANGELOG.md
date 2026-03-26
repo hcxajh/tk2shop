@@ -1,5 +1,40 @@
 # CHANGELOG - tk2shop
 
+## v0.3.26 (2026-03-26)
+
+### 新增：descriptionBlocks 导出为 Shopify Body (HTML)
+
+**新增内容：**
+- `scripts/publisher/to-csv.js` 新增 `descriptionBlocks -> Body (HTML)` 导出链路
+- 导出规则保持最小化、低改写：
+  - `type: "text"` → `<p>...</p>`
+  - `type: "image"` → `<img ...>`
+- `Body (HTML)` 当前导出优先级调整为：
+  1. 优先使用 `product.descriptionBlocks`
+  2. 若无 block 或渲染为空，再回退到原始 `description` 的 `<br>` 逻辑
+- 新增基础 HTML 转义，避免正文中的特殊字符直接破坏 HTML 结构
+- 图片标签当前使用基础安全样式：
+  - `max-width:100%`
+  - `height:auto`
+  - `display:block`
+
+**当前行为说明：**
+- Shopify CSV 图片列（主图 / SKU 图）仍按原逻辑走 imgbb 上传
+- `Body (HTML)` 中由 `descriptionBlocks` 输出的详情图，当前直接使用 block 中的原始详情图 URL
+- 本轮先以“最小可用、顺序正确”为目标，不在导出阶段重写文案、不强加版式模板
+
+**真实样本回归：**
+- `2026-03-26/008`
+  - `Body (HTML)` 已按 block 顺序输出：图 → 文 → 图
+  - 导出结果统计：`IMG_COUNT = 10`, `P_COUNT = 5`
+- `2026-03-26/009`
+  - `Body (HTML)` 已按 block 顺序输出：文 → 图
+  - 导出结果统计：`IMG_COUNT = 11`, `P_COUNT = 10`
+
+**意义：**
+- `descriptionBlocks` 已从“采集端结构化字段”正式接入“发布端 HTML 导出链路”
+- 后续 Shopify 商品介绍恢复原始图文顺序，已有可落地的数据与导出路径
+
 ## v0.3.25 (2026-03-26)
 
 ### 修复：TikTok 商品描述区抓取收口，补全描述图并输出结构化 blocks
