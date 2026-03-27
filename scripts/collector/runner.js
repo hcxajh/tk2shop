@@ -1051,15 +1051,6 @@ async function main() {
     };
     fs.writeFileSync(path.join(outDir, 'product.json'), JSON.stringify(product, null, 2));
 
-    // 8b. 自动增强 Shopify 内容（失败不阻断主采集链路）
-    try {
-      const enrichScript = path.join(__dirname, '..', 'publisher', 'enrich-product.js');
-      execSync(`node "${enrichScript}" "${outDir}"`, { stdio: 'inherit', timeout: 30000 });
-      log('✨ 已自动完成内容增强');
-    } catch (e) {
-      log(`⚠️ 自动内容增强失败（已跳过，不影响采集结果）: ${e.message}`);
-    }
-
     // 9. 关闭新建的Tab
     await pg.close().catch(() => {});
 

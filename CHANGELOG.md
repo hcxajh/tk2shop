@@ -1,5 +1,33 @@
 # CHANGELOG - tk2shop
 
+## v0.3.32 (2026-03-27)
+
+### 调整：发布总入口统一编排采集、增强、CSV、导入与模板收尾
+
+**本轮调整内容：**
+- `scripts/collector/runner.js`
+  - 移除“采集完成后自动调用 `enrich-product.js`”逻辑
+  - 现在只负责：采集商品、下载图片、生成原始 `product.json`
+- `scripts/publisher/publish-product.js`
+  - 升级为统一总入口，支持两种模式：
+    - 目录模式：`node publish-product.js <商品目录> --store <店铺ID>`
+    - URL 模式：`node publish-product.js --url "<商品链接>" --store <店铺ID>`
+  - 统一编排链路改为：
+    1. 采集（仅 URL 模式）
+    2. 内容增强 `enrich-product.js`
+    3. CSV 生成 `to-csv.js`
+    4. Shopify 导入 `import-csv-onestop.js`
+    5. 模板收尾（由导入脚本内部继续执行）
+  - 新增可选参数：
+    - `--skip-enrich`
+    - `--collect-only`
+    - 保留 `--skip-csv` / `--csv-only`
+
+**本次结构意义：**
+- 采集、增强、发布职责彻底拆开，便于单独执行和排查
+- 总入口统一编排，既能“一步执行”，也支持“分步执行”
+- 原始采集产物与发布加工产物边界更清晰，后续扩展价格规则、标签规则、SEO 规则更方便
+
 ## v0.3.31 (2026-03-27)
 
 ### 修复：CSV 残留原始标题字段，并统一评论模板使用发布标题
