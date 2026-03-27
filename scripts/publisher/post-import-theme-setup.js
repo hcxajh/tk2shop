@@ -160,23 +160,24 @@ function isProfileActive(profileNo) {
 }
 
 async function resolveHealthyCdp(profileNo, preferNew = false) {
-  const maxAttempts = preferNew ? 4 : 2;
+  const maxAttempts = preferNew ? 4 : 4;
+  let triedActiveReuse = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let candidate = null;
 
-    if (!preferNew) {
+    const allowReuse = !preferNew && !triedActiveReuse;
+    if (allowReuse) {
       const activeBrowser = getActiveBrowser(profileNo);
       if (activeBrowser?.cdpUrl && activeBrowser.cdpUrl.startsWith('ws')) {
         candidate = { cdpUrl: activeBrowser.cdpUrl, isNew: false };
+        triedActiveReuse = true;
         log(`🔌 尝试复用 CDP (${attempt}/${maxAttempts}): ${candidate.cdpUrl}`);
       }
     }
 
     if (!candidate) {
-      if (attempt > 1 || preferNew) {
-        log(`🔓 打开 AdsPower 浏览器以刷新 CDP (${attempt}/${maxAttempts})...`);
-      }
+      log(`🔓 打开 AdsPower 浏览器以刷新 CDP (${attempt}/${maxAttempts})...`);
       const opened = await new Promise((resolve, reject) => {
         const jsonArg = JSON.stringify({ profileNo: String(profileNo) });
         const p = spawn('npx', ['--yes', 'adspower-browser', 'open-browser', jsonArg], { timeout: 90000 });
@@ -767,9 +768,11 @@ async function main() {
 
   let browser = null;
   let cdpResult = null;
+  let openedByUs = false;
 
   try {
     cdpResult = await openBrowser(profileNo);
+    openedByUs = Boolean(cdpResult && cdpResult.isNew);
     browser = await chromium.connectOverCDP(cdpResult.cdpUrl);
 
     const context = browser.contexts()[0];
@@ -783,9 +786,8 @@ async function main() {
     const pageCount = context.pages().length;
     const reusedContext = pageCount > 1 || isEditorUrl(page.url()) || /admin\.shopify\.com\/store\//.test(page.url());
     log(`🧭 连接后检测到 ${pageCount} 个页面，目标页: ${page.url()}`);
-    if (reusedContext && cdpResult && cdpResult.isNew) {
-      log('♻️ 虽然本次通过 open-browser 建立连接，但已命中现有 Shopify 页面上下文，后续按复用已有浏览器处理');
-      cdpResult.isNew = false;
+    if (reusedContext && openedByUs) {
+      log('♻️ 本次虽然新开了 AdsPower 浏览器，但已命中现有 Shopify 页面上下文；仅复用页面，不改变最终退出责任');
     }
 
     await page.bringToFront().catch(() => {});
@@ -822,10 +824,12 @@ async function main() {
     log('🎉 模板闭环完成：已创建模板、填写 3 个 Column、保存模板，并绑定到商品；已关闭当前商品Tab，准备退出AdsPower');
   } finally {
     if (browser) {
-      if (cdpResult && cdpResult.isNew) {
+      if (openedByUs) {
+        log('🧹 本次 AdsPower 由脚本打开，准备彻底关闭浏览器与 profile');
         try { await browser.close(); } catch (e) {}
         await closeBrowser(profileNo);
       } else {
+        log('🔗 本次仅复用已有浏览器，断开 CDP 连接，不主动关闭 AdsPower');
         try { await browser.disconnect(); } catch (e) {}
       }
     }
