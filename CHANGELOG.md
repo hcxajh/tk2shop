@@ -1,5 +1,59 @@
 # CHANGELOG - tk2shop
 
+## v0.3.34 (2026-03-27)
+
+### 修复：Theme template 精准绑定、模板列表同步等待与足贴标题串货
+
+**本轮修复内容：**
+- `scripts/publisher/post-import-theme-setup.js`
+  - 不再只靠全页模糊扫描 `s-internal-select` 猜测模板控件
+  - 改为命中真正 `label=Theme template` 的下拉后再执行绑定
+  - 新增“模板列表同步等待”逻辑：
+    - Theme Editor 新建模板后，先检查商品页下拉是否已出现目标模板
+    - 若未同步，则等待并在必要时 reload 商品页后重查
+  - 修复模板绑定收尾 bug：
+    - 临时标记 `data-openclaw-theme-template-target` 不再过早移除
+    - 改为最终状态确认完成后再清理，避免后续 locator 超时
+- `scripts/publisher/enrich-product.js`
+  - 修复足贴类商品标题与评论素材串到旧脚磨脚器模板的问题
+  - 为 `(turmeric|ginger) + foot patches` 增加独立标题规则
+  - 不再把新商品默认归并到旧爆款品类标题风格
+
+**真实验证结果：**
+- 样本目录：`/root/.openclaw/TKdown/2026-03-27/004`
+- Shopify 商品 ID：`9161183756510`
+- 最终成功模板：`20260327173916`
+- 最终链路验证通过：
+  - 标题正确：`24 Pack Turmeric & Ginger Foot Patches for Overnight Foot Care`
+  - 新模板创建成功
+  - 模板列表同步后成功绑定商品
+  - 日志出现：`商品模板已绑定并保存`
+  - AdsPower profile 最终确认回到 `Inactive`
+
+**本次修复意义：**
+- 把模板绑定问题从“误抓控件”进一步收口到“模板列表同步延迟”并彻底修通
+- 避免新商品标题/评论串货到旧品类，减少发布错误
+- 让 `publish-product.js` 一条龙链路在真实新商品上再次闭环成功
+
+## v0.3.33 (2026-03-27)
+
+### 修复：模板收尾后增加 AdsPower profile 关闭确认与兜底关闭
+
+**本轮修复内容：**
+- `scripts/publisher/post-import-theme-setup.js`
+  - 在脚本主动打开 AdsPower profile 的场景下，关闭后不再只执行一次 `close-browser`
+  - 新增关闭确认逻辑：
+    - 关闭后连续轮询 profile 状态
+    - 若短时间内仍显示 `Active`，自动再执行一次兜底 `close-browser`
+  - 新增收尾日志：
+    - `AdsPower profile 已确认关闭`
+    - 若状态持续抖动，则明确提示人工复核
+
+**本次修复意义：**
+- 区分“真实残留未关”与“AdsPower 状态查询短暂延迟”
+- 让模板收尾后的退出判定更稳，不再只依赖单次状态查询
+- 为后续定位 AdsPower 状态同步抖动留下更清晰日志
+
 ## v0.3.32 (2026-03-27)
 
 ### 调整：发布总入口统一编排采集、增强、CSV、导入与模板收尾

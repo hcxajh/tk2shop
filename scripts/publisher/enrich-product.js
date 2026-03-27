@@ -60,8 +60,6 @@ function normalizeShopifyTitle(product) {
     .replace(/\b(?:2024|2025|2026|2027)\b/gi, '')
     .replace(/\b(?:new|hot sale|best seller|flash sale)\b/gi, '')
     .replace(/\b(?:body care products?|daily use|diy manicure)\b/gi, '')
-    .replace(/\b(?:foot dead skin remover|foot callus remover)\b/gi, 'foot callus remover')
-    .replace(/\bcordless nail file\b/gi, '')
     .replace(/\s+,/g, ',')
     .replace(/,+/g, ',')
     .replace(/\s{2,}/g, ' ')
@@ -69,6 +67,7 @@ function normalizeShopifyTitle(product) {
     .trim()
 
   const base = cleaned || sourceTitle
+  const lowerBase = base.toLowerCase()
   const bits = base
     .split(',')
     .map(part => normalizeWhitespace(part))
@@ -82,30 +81,46 @@ function normalizeShopifyTitle(product) {
     }
   }
 
+  if (/(turmeric|ginger)/i.test(lowerBase) && /(patch|patches)/i.test(lowerBase)) {
+    const packMatch = base.match(/\b(\d+\s*(?:pack|pcs?|pieces?))\b/i)
+    const packText = packMatch ? normalizeWhitespace(packMatch[1]).replace(/\bpack\b/i, 'Pack') : '24 Pack'
+    return normalizeWhitespace(`${packText} Turmeric & Ginger Foot Patches for Overnight Foot Care`)
+  }
+
+  if (/(foot patch|foot patches)/i.test(lowerBase)) {
+    const packMatch = base.match(/\b(\d+\s*(?:pack|pcs?|pieces?))\b/i)
+    const packText = packMatch ? normalizeWhitespace(packMatch[1]).replace(/\bpack\b/i, 'Pack') : ''
+    return normalizeWhitespace(`${packText ? `${packText} ` : ''}Detox Foot Patches for Overnight Foot Care`)
+  }
+
   const head = uniqueBits[0] || base
   const lower = head.toLowerCase()
-  const hasCallusRemover = /callus remover/.test(lower)
-  const hasRechargeable = /rechargeable/.test(lower)
-  const hasFoot = /foot/.test(lower)
-const hasLed = uniqueBits.some(bit => /(?:led light|& light|with light|light\b)/i.test(bit))
+  const hasCallusRemover = /callus remover/.test(lower) || /dead skin remover/.test(lowerBase)
+  const hasRechargeable = /rechargeable/.test(lowerBase)
+  const hasFoot = /foot/.test(lowerBase)
+  const hasLed = uniqueBits.some(bit => /(?:led light|& light|with light|light\b)/i.test(bit))
   const hasWashable = uniqueBits.some(bit => /washable/i.test(bit))
   const hasAdjustable = uniqueBits.some(bit => /(2 adjustable levels|2 speeds|adjustable)/i.test(bit))
 
-  const titleParts = []
-  if (hasRechargeable) titleParts.push('Rechargeable')
-  if (hasFoot && !hasCallusRemover) titleParts.push('Electric Foot Care Tool')
-  else titleParts.push('Electric Foot Callus Remover')
-  if (hasAdjustable) titleParts.push('with 2 Speeds')
+  if (hasFoot || hasCallusRemover) {
+    const titleParts = []
+    if (hasRechargeable) titleParts.push('Rechargeable')
+    if (hasFoot && !hasCallusRemover) titleParts.push('Electric Foot Care Tool')
+    else titleParts.push('Electric Foot Callus Remover')
+    if (hasAdjustable) titleParts.push('with 2 Speeds')
 
-  const extras = []
-  if (hasWashable) extras.push('Washable Grinding Head')
-  if (hasLed) extras.push('LED Light')
+    const extras = []
+    if (hasWashable) extras.push('Washable Grinding Head')
+    if (hasLed) extras.push('LED Light')
 
-  let result = titleParts.join(' ')
-  if (extras.length) result += `, ${extras.join(' and ')}`
-  result += ' for At-Home Pedicure Care'
+    let result = titleParts.join(' ')
+    if (extras.length) result += `, ${extras.join(' and ')}`
+    result += ' for At-Home Pedicure Care'
 
-  return normalizeWhitespace(result.replace(/\s+,/g, ',').replace(/\s{2,}/g, ' '))
+    return normalizeWhitespace(result.replace(/\s+,/g, ',').replace(/\s{2,}/g, ' '))
+  }
+
+  return normalizeWhitespace(base)
 }
 
 function lightRewriteTextBlock(text) {

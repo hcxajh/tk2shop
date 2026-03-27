@@ -230,6 +230,33 @@ function closeBrowser(profileNo) {
   });
 }
 
+async function waitForProfileInactive(profileNo, options = {}) {
+  const retries = options.retries || 4;
+  const intervalMs = options.intervalMs || 3000;
+
+  for (let i = 1; i <= retries; i++) {
+    const active = isProfileActive(profileNo);
+    log(`🔍 检查 AdsPower profile 状态 (${i}/${retries}): ${active ? 'Active' : 'Inactive'}`);
+    if (!active) return true;
+    if (i < retries) {
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+  }
+
+  return false;
+}
+
+async function ensureProfileClosed(profileNo) {
+  await closeBrowser(profileNo);
+  let inactive = await waitForProfileInactive(profileNo, { retries: 3, intervalMs: 2500 });
+  if (inactive) return true;
+
+  log('⚠️ Profile 关闭后仍显示 Active，执行一次兜底 close-browser...');
+  await closeBrowser(profileNo);
+  inactive = await waitForProfileInactive(profileNo, { retries: 4, intervalMs: 3000 });
+  return inactive;
+}
+
 async function findCurrentAdminPage(context, slug) {
   const pages = context.pages();
   for (const page of pages) {
@@ -620,57 +647,246 @@ async function exitEditor(frame, page) {
 
 async function waitForProductEditorReady(page, timeoutMs = 60000) {
   const started = Date.now();
+  let reloaded = false;
+  let verifySeen = false;
+  let verifySince = 0;
+  let verifyReloaded = false;
+
   while (Date.now() - started < timeoutMs) {
+    const currentUrl = page.url() || '';
     const bodyText = ((await page.locator('body').innerText().catch(() => '')) || '').replace(/\s+/g, ' ');
-    if (/Your connection needs to be verified before you can proceed/i.test(bodyText)) {
-      await page.waitForTimeout(3000);
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+    const verifyBlocked = /Your connection needs to be verified before you can proceed/i.test(bodyText);
+
+    if (verifyBlocked) {
+      if (!verifySeen) {
+        verifySeen = true;
+        verifySince = Date.now();
+        log('⚠️ 商品页命中 Shopify 连接校验，进入等待窗口...');
+      }
+
+      const verifyElapsed = Date.now() - verifySince;
+      if (!verifyReloaded && verifyElapsed > 15000) {
+        log('⚠️ 连接校验持续未消失，执行一次 reload 兜底...');
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+        verifyReloaded = true;
+      } else {
+        await page.waitForTimeout(5000);
+      }
+
+      if (verifyElapsed > 45000) {
+        throw new Error('商品编辑页被 Shopify 连接校验拦截，等待后仍未恢复');
+      }
       continue;
     }
-    if (/Theme template|Product status|Variants|Organization|This page is ready/i.test(bodyText)) {
+
+    if (verifySeen) {
+      log('✅ Shopify 连接校验已消失，继续等待商品编辑页就绪...');
+      verifySeen = false;
+      verifySince = 0;
+    }
+
+    const onProductPage = /admin\.shopify\.com\/store\/[^/]+\/products\//i.test(currentUrl);
+    const hasProductSignals = /Theme template|Product status|Variants|Organization|Inventory|Media|Pricing|Title|This page is ready/i.test(bodyText);
+
+    const interactiveState = await page.evaluate(() => {
+      const text = document.body?.innerText || '';
+      const saveBtn = Array.from(document.querySelectorAll('button')).find(btn => /save/i.test(btn.textContent || ''));
+      const internalSelects = Array.from(document.querySelectorAll('s-internal-select'));
+      const themeHost = internalSelects.find(el => {
+        const label = (el.getAttribute('label') || el.getAttribute('aria-label') || '').trim();
+        return /Theme template/i.test(label);
+      });
+      const hasFormLike = Boolean(
+        document.querySelector('form')
+        || document.querySelector('input[name="title"]')
+        || document.querySelector('[name="title"]')
+        || document.querySelector('s-internal-select')
+      );
+      return {
+        readyState: document.readyState,
+        hasSaveBtn: Boolean(saveBtn),
+        hasThemeHost: Boolean(themeHost),
+        hasFormLike,
+        bodyLen: text.length,
+      };
+    }).catch(() => ({ readyState: 'unknown', hasSaveBtn: false, hasThemeHost: false, hasFormLike: false, bodyLen: 0 }));
+
+    if (onProductPage && hasProductSignals && (interactiveState.hasThemeHost || interactiveState.hasFormLike || interactiveState.hasSaveBtn)) {
+      log(`✅ 商品编辑页已就绪: readyState=${interactiveState.readyState} save=${interactiveState.hasSaveBtn} theme=${interactiveState.hasThemeHost} form=${interactiveState.hasFormLike}`);
       return true;
     }
+
+    if (onProductPage && !reloaded && Date.now() - started > Math.min(25000, Math.floor(timeoutMs / 2))) {
+      log('⚠️ 已到商品页但仍未完全就绪，执行一次 reload 兜底...');
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      reloaded = true;
+      await page.waitForTimeout(3000);
+      continue;
+    }
+
     await page.waitForTimeout(2000);
   }
   return false;
 }
 
+async function waitForThemeTemplateOption(page, templateName, timeoutMs = 45000) {
+  const started = Date.now();
+  let reloadCount = 0;
+
+  while (Date.now() - started < timeoutMs) {
+    const snapshot = await page.evaluate((template) => {
+      const normalized = s => String(s || '').replace(/\s+/g, ' ').trim();
+      const hosts = Array.from(document.querySelectorAll('s-internal-select'));
+      const matched = hosts
+        .map(host => {
+          const label = normalized(
+            host.getAttribute('label')
+            || host.getAttribute('aria-label')
+            || host.shadowRoot?.querySelector('label, .label, [part="label"]')?.textContent
+            || ''
+          );
+          const inner = host.shadowRoot?.querySelector('select#select, select');
+          if (!inner || !/Theme template/i.test(label)) return null;
+          const options = Array.from(inner.options).map(opt => ({
+            value: opt.value || '',
+            text: normalized(opt.textContent),
+          }));
+          const optionHit = options.some(opt => opt.value === template || opt.text === template);
+          return {
+            label,
+            value: inner.value || host.value || host.getAttribute('value') || '',
+            optionHit,
+            optionCount: options.length,
+            optionsPreview: options.slice(0, 20),
+          };
+        })
+        .filter(Boolean);
+
+      const found = matched.find(item => item.optionHit);
+      return {
+        found: Boolean(found),
+        target: found || null,
+        candidates: matched.slice(0, 6),
+      };
+    }, templateName).catch(() => ({ found: false, target: null, candidates: [] }));
+
+    if (snapshot.found) {
+      log(`✅ 模板已同步到商品页下拉: ${templateName}`);
+      return snapshot.target;
+    }
+
+    log(`⏳ 等待模板同步到商品页下拉: ${templateName}`);
+    if (snapshot.candidates?.length) {
+      log(`   当前下拉模板数: ${snapshot.candidates[0].optionCount}，最新可见: ${(snapshot.candidates[0].optionsPreview || []).map(x => x.text || x.value).slice(-3).join(', ') || '(空)'}`);
+    }
+
+    if (reloadCount < 2 && Date.now() - started > 12000 * (reloadCount + 1)) {
+      reloadCount += 1;
+      log(`🔄 商品页模板列表尚未同步，执行第 ${reloadCount} 次 reload...`);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+      await waitForProductEditorReady(page, 30000).catch(() => false);
+      continue;
+    }
+
+    await page.waitForTimeout(4000);
+  }
+
+  throw new Error(`新模板已创建，但商品页模板列表尚未同步: ${templateName}`);
+}
+
 async function bindThemeTemplateAndSave(page, templateName) {
   log(`🔗 绑定商品模板: ${templateName}`);
-  const select = page.locator('s-internal-select[label="Theme template"]').first();
-  await select.waitFor({ state: 'attached', timeout: 20000 });
+  await waitForThemeTemplateOption(page, templateName, 50000);
+
+  const selectInfo = await page.waitForFunction(
+    ({ templateName }) => {
+      const normalized = s => String(s || '').replace(/\s+/g, ' ').trim();
+      const containers = Array.from(document.querySelectorAll('section, [role="region"], form, div'))
+        .filter(el => /Theme template/i.test(normalized(el.innerText || '')))
+        .slice(0, 10);
+
+      const candidateInfos = [];
+      for (const container of containers) {
+        const containerText = normalized(container.innerText || '');
+        const hosts = Array.from(container.querySelectorAll('s-internal-select'));
+        for (const host of hosts) {
+          const label = normalized(
+            host.getAttribute('label')
+            || host.getAttribute('aria-label')
+            || host.shadowRoot?.querySelector('label, .label, [part="label"]')?.textContent
+            || ''
+          );
+          const inner = host.shadowRoot?.querySelector('select#select, select');
+          if (!inner) continue;
+          const value = inner.value || host.value || host.getAttribute('value') || '';
+          const options = Array.from(inner.options).map(opt => ({
+            value: opt.value || '',
+            text: normalized(opt.textContent),
+          }));
+          const optionHit = options.some(opt => opt.value === templateName || opt.text === templateName);
+          candidateInfos.push({
+            label,
+            value,
+            optionHit,
+            optionCount: options.length,
+            containerText: containerText.slice(0, 240),
+            optionsPreview: options.slice(0, 12),
+          });
+          if (optionHit) {
+            host.setAttribute('data-openclaw-theme-template-target', '1');
+            return {
+              found: true,
+              label,
+              value,
+              optionCount: options.length,
+              optionsPreview: options.slice(0, 12),
+              containerText: containerText.slice(0, 240),
+              candidates: candidateInfos.slice(0, 6),
+            };
+          }
+        }
+      }
+
+      return {
+        found: false,
+        candidates: candidateInfos.slice(0, 6),
+      };
+    },
+    { templateName },
+    { timeout: 45000 }
+  );
+
+  const info = await selectInfo.jsonValue();
+  if (!info?.found) {
+    throw new Error(`未找到 Theme template 控件: ${JSON.stringify(info?.candidates || [])}`);
+  }
+
+  log(`   命中控件: label=${info.label || '(空)'} value=${info.value || '(空)'} optionCount=${info.optionCount}`);
+  const select = page.locator('s-internal-select[data-openclaw-theme-template-target="1"]').first();
+  await select.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(1000);
 
   const before = await select.evaluate(el => {
-    const inner = el.shadowRoot?.querySelector('select#select');
+    const inner = el.shadowRoot?.querySelector('select#select, select');
     return inner?.value || el.value || el.getAttribute('value') || '';
   });
   log(`   当前模板: ${before || '(空)'}`);
 
-  await page.waitForFunction(
-    ({ label, template }) => {
-      const host = document.querySelector(`s-internal-select[label="${label}"]`);
-      const inner = host?.shadowRoot?.querySelector('select#select');
-      if (!inner) return false;
-      return Array.from(inner.options).some(opt => opt.value === template || opt.textContent.trim() === template);
-    },
-    { label: 'Theme template', template: templateName },
-    { timeout: 15000 }
-  );
-
   const setResult = await select.evaluate((el, template) => {
-    const inner = el.shadowRoot?.querySelector('select#select');
+    const inner = el.shadowRoot?.querySelector('select#select, select');
     const shown = el.shadowRoot?.querySelector('.value');
     if (!inner) {
       return { ok: false, reason: 'inner select missing' };
     }
 
+    const normalize = s => String(s || '').replace(/\s+/g, ' ').trim();
     const beforeValue = inner.value || el.value || el.getAttribute('value') || '';
-    const option = Array.from(inner.options).find(opt => opt.value === template || opt.textContent.trim() === template);
+    const option = Array.from(inner.options).find(opt => opt.value === template || normalize(opt.textContent) === template);
     if (!option) {
       return {
         ok: false,
         reason: 'option missing',
-        options: Array.from(inner.options).map(opt => opt.value || opt.textContent.trim()),
+        options: Array.from(inner.options).map(opt => opt.value || normalize(opt.textContent)),
       };
     }
 
@@ -684,7 +900,7 @@ async function bindThemeTemplateAndSave(page, templateName) {
     inner.value = option.value;
     if (typeof el.value !== 'undefined') el.value = option.value;
     el.setAttribute('value', option.value);
-    if (shown) shown.textContent = option.textContent.trim();
+    if (shown) shown.textContent = normalize(option.textContent);
 
     inner.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     inner.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
@@ -701,6 +917,9 @@ async function bindThemeTemplateAndSave(page, templateName) {
   }, templateName);
 
   if (!setResult.ok || setResult.after !== templateName) {
+    await page.evaluate(() => {
+      document.querySelectorAll('s-internal-select[data-openclaw-theme-template-target="1"]').forEach(el => el.removeAttribute('data-openclaw-theme-template-target'));
+    }).catch(() => {});
     throw new Error(`Theme template 切换失败: ${JSON.stringify(setResult)}`);
   }
 
@@ -711,13 +930,18 @@ async function bindThemeTemplateAndSave(page, templateName) {
   await page.waitForTimeout(5000);
 
   const finalState = await select.evaluate(el => {
-    const inner = el.shadowRoot?.querySelector('select#select');
+    const inner = el.shadowRoot?.querySelector('select#select, select');
     const shown = el.shadowRoot?.querySelector('.value');
     return {
       value: inner?.value || el.value || el.getAttribute('value') || '',
       shown: shown?.textContent?.trim() || '',
     };
   });
+
+  await page.evaluate(() => {
+    document.querySelectorAll('s-internal-select[data-openclaw-theme-template-target="1"]').forEach(el => el.removeAttribute('data-openclaw-theme-template-target'));
+  }).catch(() => {});
+
   if (finalState.value !== templateName) {
     throw new Error(`保存后模板值异常，期望=${templateName}，实际=${finalState.value}`);
   }
@@ -827,7 +1051,12 @@ async function main() {
       if (openedByUs) {
         log('🧹 本次 AdsPower 由脚本打开，准备彻底关闭浏览器与 profile');
         try { await browser.close(); } catch (e) {}
-        await closeBrowser(profileNo);
+        const closed = await ensureProfileClosed(profileNo);
+        if (closed) {
+          log('✅ AdsPower profile 已确认关闭');
+        } else {
+          log('⚠️ AdsPower profile 关闭后状态仍不稳定，请稍后人工复核');
+        }
       } else {
         log('🔗 本次仅复用已有浏览器，断开 CDP 连接，不主动关闭 AdsPower');
         try { await browser.disconnect(); } catch (e) {}
